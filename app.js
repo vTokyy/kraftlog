@@ -1,0 +1,1720 @@
+/* ===== Kraftlog — App-Engine =====
+ * State-Schema (localStorage 'kraftlog-state-v1'):
+ *   settings:        { theme, sound, vibration, restCompound, restIsolation, incUpper, incLower, lastExport }
+ *   customExercises: [ { id:'cu-…', name, mg, eq, compound } ]
+ *   exerciseSettings:{ exId: { restSec, notiz } }
+ *   templates:       [ { id, name, createdAt, exercises:[{exId, sets, repMin, repMax, restSec}] } ]
+ *   workouts:        [ { id, templateId, name, startedAt, finishedAt, notiz,
+ *                        exercises:[{exId, repMin, repMax, sets:[{kg, reps, rpe, warmup, doneAt, restSec}]}] } ]
+ *   activeWorkout:   wie workout, Sätze zusätzlich mit done:true/false; rest = laufende Pause
+ *   bodyweight:      [ { date:'YYYY-MM-DD', kg } ]
+ * PRs werden nie gespeichert, immer aus der Historie berechnet.
+ */
+(function () {
+'use strict';
+
+/* ---------- Kurzhelfer & Konstanten ---------- */
+const $ = sel => document.querySelector(sel);
+const LS_KEY = 'kraftlog-state-v1';
+const BACKUP_KEY = 'kraftlog-backup';
+const SCHEMA_VERSION = 1;
+const EXES = window.KRAFTLOG_EXERCISES || [];
+const MGS = window.KRAFTLOG_MUSKELGRUPPEN || [];
+const EQS = window.KRAFTLOG_EQUIPMENT || [];
+const Charts = window.KraftlogCharts;
+const Signal = window.KraftlogTimer;
+const RPE_WERTE = ['6', '6.5', '7', '7.5', '8', '8.5', '9', '9.5', '10'];
+const TAG_MS = 86400000;
+
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/* ---------- State ---------- */
+let storageOk = true;
+try { localStorage.setItem('kraftlog-test', '1'); localStorage.removeItem('kraftlog-test'); } catch (e) { storageOk = false; }
+let readOnly = false; // Daten stammen aus einer neueren App-Version → nicht überschreiben
+
+function defaults() {
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    settings: {
+      theme: 'auto', sound: true, vibration: true,
+      restCompound: 180, restIsolation: 90,
+      incUpper: 2.5, incLower: 5, lastExport: null,
+      groesseCm: null
+    },
+    customExercises: [],
+    exerciseSettings: {},
+    templates: [],
+    workouts: [],
+    runs: [],
+    activeWorkout: null,
+    bodyweight: []
+  };
+}
+/* Typen absichern: kaputte/fremde Importe dürfen die App nie unbenutzbar machen */
+function sanitizeState(s) {
+  const d = defaults();
+  if (!Array.isArray(s.customExercises)) s.customExercises = d.customExercises;
+  if (!Array.isArray(s.templates)) s.templates = d.templates;
+  if (!Array.isArray(s.workouts)) s.workouts = d.workouts;
+  if (!Array.isArray(s.bodyweight)) s.bodyweight = d.bodyweight;
+  if (!Array.isArray(s.runs)) s.runs = d.runs;
+  if (!s.exerciseSettings || typeof s.exerciseSettings !== 'object' || Array.isArray(s.exerciseSettings)) s.exerciseSettings = d.exerciseSettings;
+  if (!s.settings || typeof s.settings !== 'object') s.settings = d.settings;
+  s.workouts = s.workouts.filter(w => w && Array.isArray(w.exercises) && typeof w.startedAt === 'number');
+  s.templates = s.templates.filter(t => t && Array.isArray(t.exercises));
+  s.customExercises = s.customExercises.filter(e => e && e.id && e.name);
+  s.bodyweight = s.bodyweight.filter(b => b && b.date && b.kg > 0);
+  s.runs = s.runs.filter(r => r && r.distanzKm > 0 && r.dauerSec > 0 && typeof r.startedAt === 'number');
+  const aw = s.activeWorkout;
+  if (!aw || typeof aw !== 'object' || !Array.isArray(aw.exercises)) s.activeWorkout = null;
+  return s;
+}
+function mergeState(parsed) {
+  parsed = parsed && typeof parsed === 'object' ? parsed : {};
+  const s = Object.assign(defaults(), parsed);
+  s.settings = Object.assign(defaults().settings, (parsed.settings && typeof parsed.settings === 'object') ? parsed.settings : {});
+  return sanitizeState(s);
+}
+function migrate(s) {
+  switch (s.schemaVersion) {
+    case 1: break;
+    /* künftige Versionen: case 1 → 2 usw., Fall-through */
+  }
+  s.schemaVersion = SCHEMA_VERSION;
+  return s;
+}
+function load() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed.schemaVersion === 'number' && parsed.schemaVersion > SCHEMA_VERSION) {
+        readOnly = true;
+        return mergeState(parsed);
+      }
+      return migrate(mergeState(parsed));
+    }
+  } catch (e) { }
+  return defaults();
+}
+let S = load();
+let saveTimer = null;
+function save() {
+  if (readOnly || !storageOk) return;
+  try { localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch (e) { }
+}
+function saveSoon() { clearTimeout(saveTimer); saveTimer = setTimeout(save, 250); }
+
+/* ---------- Formatierung (deutsch, Komma) ---------- */
+function fmtKg(x) {
+  if (x == null || isNaN(x)) return '–';
+  return String(Math.round(x * 100) / 100).replace('.', ',');
+}
+function fmtInput(x) { return x == null || isNaN(x) ? '' : String(Math.round(x * 100) / 100).replace('.', ','); }
+function parseNum(str) {
+  if (str == null) return null;
+  const s = String(str).trim().replace(',', '.');
+  if (s === '') return null;
+  const n = parseFloat(s);
+  return isNaN(n) ? null : n;
+}
+function fmtVol(v) {
+  if (!v) return '0 kg';
+  return v >= 1000 ? String(Math.round(v / 100) / 10).replace('.', ',') + ' t' : Math.round(v) + ' kg';
+}
+function fmtDauer(sec) {
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+  if (h > 0) return h + ' h ' + m + ' min';
+  if (m > 0) return m + ' min';
+  return '<1 min';
+}
+function fmtMinSek(sec) {
+  sec = Math.max(0, Math.round(sec));
+  return Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0');
+}
+function fmtDatumLang(ms) { return new Date(ms).toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' }); }
+function fmtDatumKurz(ms) { return new Date(ms).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' }); }
+function fmtUhrzeit(ms) { return new Date(ms).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }); }
+function fmtMonat(ms) { return new Date(ms).toLocaleDateString('de-DE', { month: 'long', year: 'numeric' }); }
+function todayStr(d) {
+  const x = d || new Date();
+  return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0');
+}
+function startOfDay(ms) { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); }
+function relTage(ms) {
+  const days = Math.round((startOfDay(Date.now()) - startOfDay(ms)) / TAG_MS);
+  if (days <= 0) return 'heute';
+  if (days === 1) return 'gestern';
+  return 'vor ' + days + ' Tagen';
+}
+
+/* ---------- Übungs-Helfer ---------- */
+function allExercises() { return EXES.concat(S.customExercises); }
+function exById(id) {
+  return allExercises().find(e => e.id === id) || { id, name: 'Gelöschte Übung', mg: MGS[0], eq: EQS[0], compound: false };
+}
+function restDefault(exId) { return exById(exId).compound ? S.settings.restCompound : S.settings.restIsolation; }
+function restTarget(exId, tplRest) {
+  if (tplRest) return tplRest;
+  const o = S.exerciseSettings[exId];
+  if (o && o.restSec) return o.restSec;
+  return restDefault(exId);
+}
+
+/* ---------- Satz-/Workout-Helfer ---------- */
+function isDone(s) { return s.done !== false; }          // fertige Workouts tragen kein done-Flag
+function workingSets(wex) { return wex.sets.filter(s => isDone(s) && !s.warmup && s.reps != null); }
+function e1rmOf(kg, reps) {
+  if (kg == null || reps == null || kg <= 0 || reps < 1 || reps > 15) return null;
+  return reps === 1 ? kg : kg * (1 + reps / 30);
+}
+function setVolume(s) { return (s.kg || 0) * (s.reps || 0); }
+function workoutVolume(w) {
+  let v = 0;
+  w.exercises.forEach(we => workingSets(we).forEach(s => { v += setVolume(s); }));
+  return v;
+}
+function workoutSetCount(w) {
+  let n = 0;
+  w.exercises.forEach(we => { n += workingSets(we).length; });
+  return n;
+}
+function topSet(ws) {
+  if (!ws.length) return null;
+  return ws.reduce((a, b) => ((b.kg || 0) > (a.kg || 0) || ((b.kg || 0) === (a.kg || 0) && b.reps > a.reps)) ? b : a);
+}
+/* Alle abgeschlossenen Einheiten mit dieser Übung, chronologisch */
+function sessionsFor(exId) {
+  const out = [];
+  for (const w of S.workouts) {
+    const wex = w.exercises.find(e => e.exId === exId);
+    if (wex && workingSets(wex).length) out.push({ w, wex });
+  }
+  out.sort((a, b) => a.w.startedAt - b.w.startedAt);
+  return out;
+}
+function lastSessionFor(exId) {
+  const s = sessionsFor(exId);
+  return s.length ? s[s.length - 1] : null;
+}
+
+/* ---------- PR-Logik (nie gespeichert, immer berechnet) ---------- */
+function neueBests() { return { maxKg: null, maxE1rm: null, repsAtKg: {}, any: false }; }
+function feedBests(b, s) {
+  if (!isDone(s) || s.warmup || s.reps == null || s.kg == null) return;
+  b.any = true;
+  if (b.maxKg == null || s.kg > b.maxKg) b.maxKg = s.kg;
+  const e = e1rmOf(s.kg, s.reps);
+  if (e != null && (b.maxE1rm == null || e > b.maxE1rm)) b.maxE1rm = e;
+  const key = String(s.kg);
+  if (b.repsAtKg[key] == null || s.reps > b.repsAtKg[key]) b.repsAtKg[key] = s.reps;
+}
+/* Prüft einen Satz gegen Bestwerte. Höchstwertiger PR gewinnt: Gewicht > e1RM > Wdh. */
+function prGegen(b, s) {
+  if (!b.any || s.warmup || s.kg == null || s.reps == null) return null;
+  if (s.kg > 0 && (b.maxKg == null || s.kg > b.maxKg)) {
+    return { typ: 'gewicht', text: 'Neuer Gewichts-PR: ' + fmtKg(s.kg) + ' kg!' };
+  }
+  const e = e1rmOf(s.kg, s.reps);
+  if (e != null && b.maxE1rm != null && e > b.maxE1rm) {
+    return { typ: 'e1rm', text: 'Neuer e1RM-PR: ' + fmtKg(Math.round(e * 10) / 10) + ' kg!' };
+  }
+  const prev = b.repsAtKg[String(s.kg)];
+  if (prev != null && s.reps > prev) {
+    return { typ: 'wdh', text: 'Wiederholungs-PR: ' + s.reps + ' × ' + fmtKg(s.kg) + ' kg!' };
+  }
+  return null;
+}
+function prBests(exId, extraSets) {
+  const b = neueBests();
+  for (const w of S.workouts) {
+    const wex = w.exercises.find(e => e.exId === exId);
+    if (wex) wex.sets.forEach(s => feedBests(b, s));
+  }
+  if (extraSets) extraSets.forEach(s => feedBests(b, s));
+  return b;
+}
+/* PR-Ereignisse chronologisch aus der gesamten Historie (selbstheilend bei Edits) */
+function allPrEvents() {
+  const bests = {};
+  const events = [];
+  const ws = [...S.workouts].sort((a, b) => a.startedAt - b.startedAt);
+  for (const w of ws) {
+    for (const wex of w.exercises) {
+      const b = bests[wex.exId] || (bests[wex.exId] = neueBests());
+      for (const s of wex.sets) {
+        const pr = prGegen(b, s);
+        if (pr) events.push({ w, exId: wex.exId, set: s, pr });
+        feedBests(b, s);
+      }
+    }
+  }
+  return events;
+}
+
+/* ---------- Progressionsvorschlag ---------- */
+function progressionFor(exId, repMin, repMax) {
+  repMin = repMin || 8;
+  repMax = repMax || 12;
+  const sess = sessionsFor(exId);
+  if (!sess.length) return { typ: 'neu', text: 'Erstes Mal — Arbeitsgewicht finden' };
+  const last = sess[sess.length - 1];
+  const ws = workingSets(last.wex);
+  const ex = exById(exId);
+  const inc = (ex.compound && (ex.mg === 'Beine' || ex.mg === 'Gesäß')) ? S.settings.incLower : S.settings.incUpper;
+  const topKg = Math.max(...ws.map(s => s.kg || 0));
+  if (ws.every(s => s.reps >= repMax)) {
+    return { typ: 'plus', kg: topKg + inc, text: '+' + fmtKg(inc) + ' kg → ' + fmtKg(topKg + inc) + ' kg (' + repMin + '–' + repMax + ' Wdh.)' };
+  }
+  if (ws.some(s => s.reps < repMin)) {
+    const prev = sess[sess.length - 2];
+    const prevBelow = prev && workingSets(prev.wex).some(s => s.reps < repMin);
+    if (prevBelow) {
+      const deload = Math.max(0, Math.round(topKg * 0.95 / 2.5) * 2.5);
+      return { typ: 'halten', kg: deload, text: 'Deload erwägen: −5 % ≈ ' + fmtKg(deload) + ' kg' };
+    }
+    return { typ: 'halten', kg: topKg, text: 'Gewicht halten: ' + fmtKg(topKg) + ' kg (' + repMin + '–' + repMax + ' Wdh.)' };
+  }
+  return { typ: 'wdh', kg: topKg, text: fmtKg(topKg) + ' kg halten, +1 Wdh. anpeilen' };
+}
+
+/* ---------- Wochenstatistik (ISO-Woche, Montag-basiert) ---------- */
+function weekStartMs(offset) {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7) - offset * 7);
+  return d.getTime();
+}
+function kwNummer(ms) {
+  const date = new Date(ms);
+  date.setHours(0, 0, 0, 0);
+  date.setDate(date.getDate() - ((date.getDay() + 6) % 7) + 3); // Donnerstag der Woche
+  const jan4 = new Date(date.getFullYear(), 0, 4);
+  return 1 + Math.round(((date - jan4) / TAG_MS - 3 + ((jan4.getDay() + 6) % 7)) / 7);
+}
+function weeklyStats(n) {
+  const weeks = [];
+  for (let i = n - 1; i >= 0; i--) {
+    const start = weekStartMs(i), end = weekStartMs(i - 1); // echter Wochenanfang statt +7 Tage (Zeitumstellung!)
+    const e = { start, end, label: 'KW ' + kwNummer(start), workouts: 0, saetze: {}, tonnage: {}, saetzeGesamt: 0, tonnageGesamt: 0 };
+    for (const w of S.workouts) {
+      if (w.startedAt < start || w.startedAt >= end) continue;
+      e.workouts++;
+      for (const wex of w.exercises) {
+        const mg = exById(wex.exId).mg;
+        for (const s of workingSets(wex)) {
+          e.saetze[mg] = (e.saetze[mg] || 0) + 1;
+          e.tonnage[mg] = (e.tonnage[mg] || 0) + setVolume(s);
+          e.saetzeGesamt++;
+          e.tonnageGesamt += setVolume(s);
+        }
+      }
+    }
+    weeks.push(e);
+  }
+  return weeks;
+}
+
+/* ---------- Toast, Konfetti, Sheet, Chart-Tooltip ---------- */
+let toastTimer = null;
+function showToast(text, cls) {
+  const t = $('#toast');
+  t.textContent = text;
+  t.className = cls || '';
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+let confettiTimer = null;
+function burstConfetti() {
+  const c = $('#confetti');
+  const farben = ['#0a84ff', '#34c759', '#ff9500', '#ff3b30', '#ffcc00', '#5e5ce6'];
+  let html = '';
+  for (let i = 0; i < 36; i++) {
+    html += '<div class="confetti-piece" style="left:' + (Math.random() * 100).toFixed(1) + '%;background:' + farben[i % 6] +
+      ';animation-duration:' + (1.6 + Math.random() * 1.4).toFixed(2) + 's;animation-delay:' + (Math.random() * 0.4).toFixed(2) + 's"></div>';
+  }
+  c.innerHTML = html;
+  clearTimeout(confettiTimer);
+  confettiTimer = setTimeout(() => { c.innerHTML = ''; }, 3400);
+}
+let pickerCb = null;
+function openSheet(html) {
+  $('#sheet-content').innerHTML = html;
+  $('#sheet').classList.remove('hidden');
+}
+function closeSheet() {
+  $('#sheet').classList.add('hidden');
+  $('#sheet-content').innerHTML = '';
+  pickerCb = null;
+}
+function showChartTip(dot) {
+  const tip = $('#chart-tip');
+  tip.textContent = dot.dataset.tip || '';
+  tip.classList.remove('hidden');
+  const r = dot.getBoundingClientRect();
+  tip.style.left = Math.max(8, Math.min(window.innerWidth - tip.offsetWidth - 8, r.left + r.width / 2 - tip.offsetWidth / 2)) + 'px';
+  tip.style.top = Math.max(8, r.top - tip.offsetHeight - 8) + 'px';
+}
+function hideChartTip() { $('#chart-tip').classList.add('hidden'); }
+
+/* ---------- Navigation & Render ---------- */
+let tab = 'start';
+let trainSub = null;     // null | 'plaene' | 'tpl-editor'
+let tplDraft = null;     // Arbeitskopie im Vorlagen-Editor
+let uebSub = null;       // null | { exId }
+let uebFilter = { q: '', mg: null, eq: null };
+let verlaufSub = null;   // null | { id }
+let editDraft = null;    // Arbeitskopie im Verlauf-Editor
+let statMg = 'Alle';
+let statMode = 'saetze';
+
+function render() {
+  document.querySelectorAll('#tabbar .tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  const v = $('#view');
+  if (tab === 'start') v.innerHTML = renderStart();
+  else if (tab === 'profil') v.innerHTML = renderProfil();
+  else if (tab === 'verlauf') v.innerHTML = renderVerlauf();
+  else if (tab === 'uebungen') v.innerHTML = renderUebungen();
+  else v.innerHTML = renderDaten();
+  renderTimerBar();
+}
+function warnHtml() {
+  if (readOnly) return '<div class="warn-banner">Diese Daten stammen aus einer neueren Kraftlog-Version. Änderungen werden nicht gespeichert — bitte zuerst in der neuen Version exportieren.</div>';
+  if (!storageOk) return '<div class="warn-banner">Browser-Speicher nicht verfügbar — Daten gehen beim Schließen verloren. Regelmäßig exportieren!</div>';
+  if (exportOverdue()) return '<button class="warn-banner" style="display:block;width:100%;text-align:left" data-action="tab" data-tab="daten">Kein Export seit über 7 Tagen — jetzt sichern ›</button>';
+  return '';
+}
+function exportOverdue() {
+  if (!S.workouts.length) return false;
+  const ref = S.settings.lastExport || S.workouts[0].startedAt;
+  return Date.now() - ref > 7 * TAG_MS;
+}
+function chartCard(title, inner) {
+  return '<div class="card chart-card"><h3>' + esc(title) + '</h3>' + inner + '</div>';
+}
+
+/* ---------- View: Start (Workout beginnen) ---------- */
+function renderStart() {
+  if (S.activeWorkout) return renderActiveWorkout();
+  if (trainSub === 'plaene') return renderPlaene();
+  if (trainSub === 'tpl-editor') return renderTplEditor();
+
+  const heute = new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
+  let h = '<h1 class="view-title">Workout starten<small>' + esc(heute) + '</small></h1>' + warnHtml();
+  if (S.templates.length) h += '<div class="section-title">Meine Workouts</div>';
+  h += '<div class="tpl-grid">';
+  for (const tpl of S.templates) {
+    const letzte = [...S.workouts].reverse().find(w => w.templateId === tpl.id);
+    h += '<button class="tpl-box" data-action="wo-start" data-tpl="' + esc(tpl.id) + '">' +
+      '<div class="tpl-box-name">' + esc(tpl.name) + '</div>' +
+      '<div class="tpl-box-sub">' + tpl.exercises.length + ' Übungen</div>' +
+      (letzte ? '<div class="tpl-box-sub">zuletzt ' + relTage(letzte.startedAt) + '</div>' : '') +
+      '<div class="tpl-box-cta">Starten ›</div></button>';
+  }
+  h += '<button class="tpl-box" data-action="wo-start">' +
+    '<div class="tpl-box-name">Freies Training</div><div class="tpl-box-sub">ohne Vorlage</div>' +
+    '<div class="tpl-box-cta">Starten ›</div></button>';
+  h += '<button class="tpl-box tpl-box-lauf" data-action="run-add">' +
+    '<div class="tpl-box-name">Lauf</div><div class="tpl-box-sub">Distanz &amp; Zeit</div>' +
+    '<div class="tpl-box-cta">Eintragen ›</div></button>';
+  h += '</div>';
+  if (!S.templates.length) {
+    h += '<div class="card" style="margin-top:12px"><div class="li-sub" style="white-space:normal">Noch keine eigenen Workouts. Lege dir unter „Pläne verwalten" Vorlagen an (z. B. Push / Pull / Beine) — dann startest du mit einem Tap und siehst pro Übung die Werte vom letzten Mal.</div></div>';
+  }
+  h += '<button class="btn btn-block" style="margin-top:12px" data-action="plaene">Pläne verwalten</button>';
+  return h;
+}
+
+/* --- Aktives Workout --- */
+function renderActiveWorkout() {
+  const aw = S.activeWorkout;
+  let h = '<div class="wo-header"><div class="wo-name"><h2>' + esc(aw.name) + '</h2>' +
+    '<div class="wo-elapsed" id="wo-elapsed">' + fmtDauer((Date.now() - aw.startedAt) / 1000) + '</div></div>' +
+    '<button class="btn btn-small" data-action="wo-menu">⋯</button>' +
+    '<button class="btn btn-small btn-green" data-action="wo-finish">Fertig</button></div>';
+  if (aw.notiz) h += '<div class="info-box">Notiz: ' + esc(aw.notiz) + '</div>';
+  aw.exercises.forEach((wex, xi) => { h += renderExCard(wex, xi); });
+  h += '<button class="btn btn-block btn-soft" data-action="wo-add-ex">+ Übung hinzufügen</button>';
+  return h;
+}
+function renderExCard(wex, xi) {
+  const ex = exById(wex.exId);
+  let h = '<div class="ex-card"><div class="ex-head"><div class="ex-title">' + esc(ex.name) + '</div><span class="tag">' + esc(ex.mg) + '</span></div>';
+  if (ex.hint) h += '<div class="ex-hint">' + esc(ex.hint) + '</div>';
+  const last = lastSessionFor(wex.exId);
+  if (last) {
+    const ws = workingSets(last.wex);
+    const pausen = ws.map(s => s.restSec).filter(x => x != null);
+    const avg = pausen.length ? ' · ⌀ Pause ' + fmtMinSek(pausen.reduce((a, b) => a + b, 0) / pausen.length) : '';
+    h += '<div class="lastmal">Letztes Mal (' + relTage(last.w.startedAt) + '): <b>' +
+      ws.map(s => fmtKg(s.kg) + '×' + s.reps).join(' · ') + '</b>' + avg + '</div>';
+  } else {
+    h += '<div class="lastmal">Noch keine früheren Einheiten.</div>';
+  }
+  const prog = progressionFor(wex.exId, wex.repMin, wex.repMax);
+  if (prog.typ === 'neu') {
+    h += '<div class="prog-chip neutral">' + esc(prog.text) + '</div>';
+  } else {
+    const cls = prog.typ === 'plus' ? '' : (prog.typ === 'halten' ? 'halten' : 'neutral');
+    h += '<button class="prog-chip ' + cls + '" data-action="prog-apply" data-ex="' + xi + '" data-kg="' + prog.kg + '">' + esc(prog.text) + '</button>';
+  }
+  h += '<div class="set-cols"><span></span><span>' + (ex.bw ? '+kg' : 'kg') + '</span><span>Wdh.</span><span>RPE</span><span>✓</span></div>';
+  let wNum = 0;
+  wex.sets.forEach((s, si) => {
+    const done = s.done === true;
+    if (!s.warmup) wNum++;
+    const label = s.warmup ? 'W' : String(wNum);
+    const dis = done ? ' disabled' : '';
+    const ds = ' data-ex="' + xi + '" data-set="' + si + '"';
+    h += '<div class="set-row' + (done ? ' done' : '') + '">' +
+      '<button class="w-toggle' + (s.warmup ? ' on' : '') + '" data-action="warmup"' + ds + ' title="Aufwärmsatz umschalten">' + label + '</button>' +
+      '<div class="num-group">' +
+      '<button class="step-btn" data-action="step" data-field="kg" data-dir="-1"' + ds + dis + '>−</button>' +
+      '<input class="num-input" inputmode="decimal" autocomplete="off" placeholder="' + (ex.bw ? '+kg' : 'kg') + '" value="' + fmtInput(s.kg) + '" data-winput="kg"' + ds + dis + '>' +
+      '<button class="step-btn" data-action="step" data-field="kg" data-dir="1"' + ds + dis + '>+</button></div>' +
+      '<div class="num-group">' +
+      '<button class="step-btn" data-action="step" data-field="reps" data-dir="-1"' + ds + dis + '>−</button>' +
+      '<input class="num-input" inputmode="numeric" autocomplete="off" placeholder="Wdh" value="' + (s.reps != null ? s.reps : '') + '" data-winput="reps"' + ds + dis + '>' +
+      '<button class="step-btn" data-action="step" data-field="reps" data-dir="1"' + ds + dis + '>+</button></div>' +
+      '<select class="rpe-sel' + (s.rpe ? ' set' : '') + '" data-wsel="rpe"' + ds + dis + '>' +
+      '<option value="">RPE</option>' +
+      RPE_WERTE.map(r => '<option value="' + r + '"' + (String(s.rpe) === r ? ' selected' : '') + '>' + r.replace('.', ',') + '</option>').join('') +
+      '</select>' +
+      '<button class="check-btn' + (done ? ' done' : '') + '" data-action="check"' + ds + '>✓</button>' +
+      setInfoLine(s) +
+      '</div>';
+  });
+  h += '<div style="display:flex;gap:14px"><button class="add-set-btn" data-action="set-add" data-ex="' + xi + '">+ Satz</button>' +
+    '<button class="add-set-btn" style="color:var(--text-2)" data-action="set-del" data-ex="' + xi + '">− Satz</button></div>';
+  return h + '</div>';
+}
+function setInfoLine(s) {
+  const bits = [];
+  if (s.pr) bits.push('<span class="badge-pr">' + ({ gewicht: 'Gewichts-PR', e1rm: 'e1RM-PR', wdh: 'Wdh.-PR' })[s.pr] + '</span>');
+  if (s.restSec != null) bits.push('Pause ' + fmtMinSek(s.restSec));
+  return bits.length ? '<div class="pause-info">' + bits.join(' · ') + '</div>' : '';
+}
+
+/* --- Workout-State-Machine --- */
+function buildWoExercise(exId, nSets, repMin, repMax, restSec) {
+  nSets = nSets || 3;
+  const last = lastSessionFor(exId);
+  const lastWs = last ? workingSets(last.wex) : [];
+  const sets = [];
+  for (let i = 0; i < nSets; i++) {
+    const ref = lastWs[i] || lastWs[lastWs.length - 1] || null;
+    sets.push({ kg: ref ? ref.kg : null, reps: ref ? ref.reps : null, rpe: null, warmup: false, done: false, doneAt: null, restSec: null });
+  }
+  return { exId, repMin: repMin || null, repMax: repMax || null, restSec: restSec || null, sets };
+}
+function startWorkout(tplId) {
+  if (S.activeWorkout) { showToast('Es läuft bereits ein Training'); return; }
+  const tpl = tplId ? S.templates.find(t => t.id === tplId) : null;
+  const now = Date.now();
+  const aw = { id: 'w-' + now, templateId: tpl ? tpl.id : null, name: tpl ? tpl.name : 'Freies Training', startedAt: now, notiz: '', exercises: [], rest: null };
+  if (tpl) tpl.exercises.forEach(it => aw.exercises.push(buildWoExercise(it.exId, it.sets, it.repMin, it.repMax, it.restSec)));
+  S.activeWorkout = aw;
+  trainSub = null;
+  tab = 'start';
+  save();
+  render();
+  window.scrollTo(0, 0);
+}
+function checkSet(xi, si) {
+  const aw = S.activeWorkout;
+  if (!aw) return;
+  const wex = aw.exercises[xi];
+  const s = wex.sets[si];
+  if (s.done === true) {          // wieder aufmachen
+    s.done = false;
+    s.doneAt = null;
+    if (aw.rest && aw.rest.exIdx === xi && aw.rest.setIdx === si) aw.rest = null;
+    delete s.pr;
+    save();
+    render();
+    return;
+  }
+  const ex = exById(wex.exId);
+  if (s.reps == null || s.reps <= 0) { showToast('Bitte Wiederholungen eintragen'); return; }
+  if (s.kg == null) {
+    if (ex.bw) s.kg = 0;
+    else { showToast('Bitte Gewicht eintragen'); return; }
+  }
+  Signal.unlock();               // Audio in dieser Nutzer-Geste entsperren (iOS)
+  const now = Date.now();
+  /* Laufende Pause finalisieren (Fallback: bis zum nächsten ✓, enthält dann die Satzausführung) */
+  if (aw.rest) {
+    const rEx = aw.exercises[aw.rest.exIdx];
+    const rs = rEx && rEx.sets[aw.rest.setIdx];
+    if (rs && rs.restSec == null) rs.restSec = Math.round((now - aw.rest.startedAt) / 1000);
+  }
+  /* PR-Check gegen Historie + frühere Sätze dieses Workouts (gleiche Übung) */
+  const earlier = [];
+  aw.exercises.forEach((we2, x2) => {
+    if (we2.exId !== wex.exId) return;
+    we2.sets.forEach((s2, si2) => { if (s2.done === true && !(x2 === xi && si2 === si)) earlier.push(s2); });
+  });
+  const bests = prBests(wex.exId, earlier);
+  s.done = true;
+  s.doneAt = now;
+  const pr = prGegen(bests, s);
+  if (pr) {
+    s.pr = pr.typ;
+    showToast(pr.text, 'pr');
+    burstConfetti();
+  }
+  /* Pause starten */
+  aw.rest = { startedAt: now, targetSec: restTarget(wex.exId, wex.restSec), exIdx: xi, setIdx: si, signaled: false };
+  save();
+  render();
+}
+function finishWorkout() {
+  const aw = S.activeWorkout;
+  if (!aw) return;
+  const cleaned = [];
+  for (const wex of aw.exercises) {
+    const sets = wex.sets.filter(s => s.done === true).map(s => ({
+      kg: s.kg, reps: s.reps, rpe: s.rpe || null, warmup: !!s.warmup, doneAt: s.doneAt,
+      restSec: s.restSec != null ? s.restSec : null
+    }));
+    if (sets.length) cleaned.push({ exId: wex.exId, repMin: wex.repMin, repMax: wex.repMax, sets });
+  }
+  /* Dauer deckeln: wird ein liegengebliebenes Training erst Stunden später beendet,
+     zählt der letzte abgehakte Satz (+ Puffer) als Ende, nicht "jetzt". */
+  let ende = Date.now();
+  let letzterSatz = 0;
+  cleaned.forEach(we => we.sets.forEach(s => { if (s.doneAt > letzterSatz) letzterSatz = s.doneAt; }));
+  if (letzterSatz && ende - letzterSatz > 30 * 60 * 1000) ende = letzterSatz;
+  const w = { id: aw.id, templateId: aw.templateId, name: aw.name, startedAt: aw.startedAt, finishedAt: ende, notiz: aw.notiz || '', exercises: cleaned };
+  S.workouts.push(w);
+  S.workouts.sort((a, b) => a.startedAt - b.startedAt);
+  S.activeWorkout = null;
+  save();
+  closeSheet();
+  showToast('Training gespeichert');
+  tab = 'verlauf';
+  verlaufSub = { id: w.id };
+  render();
+  window.scrollTo(0, 0);
+}
+function discardWorkout() {
+  S.activeWorkout = null;
+  save();
+  closeSheet();
+  render();
+  showToast('Training verworfen');
+}
+
+/* --- Pausen-Timer (rein timestampbasiert) --- */
+function renderTimerBar() {
+  const bar = $('#timer-bar');
+  const aw = S.activeWorkout;
+  if (!aw || !aw.rest) { bar.classList.add('hidden'); return; }
+  bar.classList.remove('hidden');
+  const el = (Date.now() - aw.rest.startedAt) / 1000;
+  const t = aw.rest.targetSec;
+  const over = el >= t;
+  bar.classList.toggle('over', over);
+  $('#timer-progress').style.width = Math.min(100, el / t * 100) + '%';
+  $('#timer-text').innerHTML = over
+    ? 'Pause vorbei <small>+' + fmtMinSek(el - t) + ' · Ziel ' + fmtMinSek(t) + '</small>'
+    : fmtMinSek(t - el) + ' <small>Pause · Ziel ' + fmtMinSek(t) + '</small>';
+  if (over && !aw.rest.signaled) {
+    aw.rest.signaled = true;
+    save();
+    if (S.settings.sound) Signal.beep();
+    if (S.settings.vibration) Signal.vibrate();
+  }
+}
+function endRest(exakt) {
+  const aw = S.activeWorkout;
+  if (!aw || !aw.rest) return;
+  if (exakt) {
+    const rEx = aw.exercises[aw.rest.exIdx];
+    const rs = rEx && rEx.sets[aw.rest.setIdx];
+    if (rs && rs.restSec == null) rs.restSec = Math.round((Date.now() - aw.rest.startedAt) / 1000);
+  }
+  aw.rest = null;
+  save();
+  render();
+}
+
+/* --- Pläne (Vorlagen) --- */
+function renderPlaene() {
+  let h = '<button class="back-btn" data-action="train-home">‹ Training</button><h1 class="view-title">Trainingspläne</h1>';
+  if (!S.templates.length) h += '<div class="empty"><p>Noch keine Pläne.<br>Erstelle z. B. „Push A" mit deinen Übungen und Ziel-Wiederholungsbereichen.</p></div>';
+  for (const tpl of S.templates) {
+    h += '<button class="li-item" data-action="tpl-edit" data-id="' + esc(tpl.id) + '">' +
+      '<div class="li-main"><div class="li-title">' + esc(tpl.name) + '</div>' +
+      '<div class="li-sub">' + tpl.exercises.map(it => esc(exById(it.exId).name)).join(', ') + '</div></div><span class="chev">›</span></button>';
+  }
+  h += '<button class="btn btn-block btn-primary" style="margin-top:8px" data-action="tpl-new">+ Neuer Plan</button>';
+  return h;
+}
+function renderTplEditor() {
+  const d = tplDraft;
+  let h = '<button class="back-btn" data-action="plaene">‹ Pläne</button>' +
+    '<h1 class="view-title" style="font-size:24px">' + (d.id ? 'Plan bearbeiten' : 'Neuer Plan') + '</h1>' +
+    '<div class="form-row"><label>Name</label><input class="input" value="' + esc(d.name) + '" placeholder="z. B. Push A" data-tinput="name"></div>' +
+    '<div class="section-title">Übungen</div>';
+  if (!d.exercises.length) h += '<div class="card"><div class="li-sub" style="white-space:normal">Noch keine Übungen im Plan.</div></div>';
+  d.exercises.forEach((it, i) => {
+    const ex = exById(it.exId);
+    h += '<div class="tpl-ex-row"><div class="li-main"><div class="li-title" style="font-size:15px">' + esc(ex.name) + '</div>' +
+      '<div class="li-sub" style="display:flex;gap:5px;align-items:center;white-space:normal;flex-wrap:wrap;margin-top:4px">' +
+      '<input class="tpl-mini" inputmode="numeric" value="' + it.sets + '" data-tex="sets" data-i="' + i + '"> Sätze · ' +
+      '<input class="tpl-mini" inputmode="numeric" value="' + it.repMin + '" data-tex="repMin" data-i="' + i + '">–' +
+      '<input class="tpl-mini" inputmode="numeric" value="' + it.repMax + '" data-tex="repMax" data-i="' + i + '"> Wdh. · ' +
+      '<input class="tpl-mini" style="width:58px" inputmode="numeric" placeholder="auto" value="' + (it.restSec || '') + '" data-tex="restSec" data-i="' + i + '"> s Pause' +
+      '</div></div>' +
+      '<button class="icon-btn" data-action="tpl-ex-up" data-i="' + i + '">↑</button>' +
+      '<button class="icon-btn" data-action="tpl-ex-down" data-i="' + i + '">↓</button>' +
+      '<button class="icon-btn" style="background:var(--red-soft);color:var(--red)" data-action="tpl-ex-del" data-i="' + i + '">×</button></div>';
+  });
+  h += '<button class="btn btn-block btn-soft" data-action="tpl-add-ex">+ Übung hinzufügen</button>' +
+    '<div class="row-2" style="margin-top:16px"><button class="btn btn-primary" data-action="tpl-save">Speichern</button>' +
+    (d.id ? '<button class="btn btn-danger" data-action="tpl-del">Löschen</button>' : '') + '</div>';
+  return h;
+}
+
+/* --- Übungs-Picker (Sheet) --- */
+function openExercisePicker(cb) {
+  pickerCb = cb;
+  openSheet('<div class="sheet-title">Übung wählen</div>' +
+    '<input class="input" placeholder="Suchen…" data-pinput="q" style="margin-bottom:10px">' +
+    '<div id="picker-list">' + pickerListHtml('') + '</div>');
+}
+function pickerListHtml(q) {
+  q = (q || '').trim().toLowerCase();
+  const list = allExercises().filter(e => !q || e.name.toLowerCase().includes(q) || e.mg.toLowerCase().includes(q));
+  let h = '';
+  const gruppen = MGS.concat([...new Set(list.map(e => e.mg))].filter(m => MGS.indexOf(m) < 0));
+  for (const mg of gruppen) {
+    const items = list.filter(e => e.mg === mg);
+    if (!items.length) continue;
+    h += '<div class="section-title">' + esc(mg) + '</div>';
+    for (const e of items) {
+      h += '<button class="li-item" style="min-height:48px;padding:9px 14px" data-action="pick-ex" data-id="' + esc(e.id) + '">' +
+        '<div class="li-main"><div class="li-title" style="font-size:15px">' + esc(e.name) + '</div></div>' +
+        '<span class="tag">' + esc(e.eq) + '</span></button>';
+    }
+  }
+  return h || '<div class="empty"><p>Nichts gefunden</p></div>';
+}
+
+/* ---------- View: Verlauf ---------- */
+function renderVerlauf() {
+  if (verlaufSub) return renderWorkoutDetail();
+  let h = '<h1 class="view-title">Verlauf</h1>';
+  if (!S.workouts.length && !S.runs.length) {
+    return h + '<div class="empty"><p>Noch keine Trainings.<br>Starte dein erstes Workout über den Start-Tab.</p></div>';
+  }
+  const prByWorkout = {};
+  allPrEvents().forEach(ev => { prByWorkout[ev.w.id] = (prByWorkout[ev.w.id] || 0) + 1; });
+  const eintraege = S.workouts.map(w => ({ t: w.startedAt, w }))
+    .concat(S.runs.map(r => ({ t: r.startedAt, r })))
+    .sort((a, b) => b.t - a.t);
+  let lastMonat = null;
+  for (const e of eintraege) {
+    const monat = fmtMonat(e.t);
+    if (monat !== lastMonat) { h += '<div class="month-hd">' + esc(monat) + '</div>'; lastMonat = monat; }
+    if (e.w) {
+      const w = e.w;
+      const dauer = w.finishedAt ? fmtDauer((w.finishedAt - w.startedAt) / 1000) : '';
+      const prs = prByWorkout[w.id];
+      h += '<button class="li-item" data-action="wo-open" data-id="' + esc(w.id) + '">' +
+        '<div class="li-main"><div class="li-title">' + esc(w.name) + '</div>' +
+        '<div class="li-sub">' + fmtDatumLang(w.startedAt) + ' · ' + dauer + ' · ' + workoutSetCount(w) + ' Sätze · ' + fmtVol(workoutVolume(w)) + '</div></div>' +
+        (prs ? '<span class="badge-pr">' + prs + '× PR</span>' : '') + '<span class="chev">›</span></button>';
+    } else {
+      const r = e.r;
+      h += '<button class="li-item" data-action="run-open" data-id="' + esc(r.id) + '">' +
+        '<div class="li-main"><div class="li-title">Lauf' + (r.notiz ? ' · ' + esc(r.notiz) : '') + '</div>' +
+        '<div class="li-sub">' + fmtDatumLang(r.startedAt) + ' · ' + fmtKg(r.distanzKm) + ' km · ' + fmtDauer(r.dauerSec) + ' · ' + fmtPace(r.dauerSec / r.distanzKm) + '</div></div>' +
+        '<span class="tag tag-lauf">Lauf</span><span class="chev">›</span></button>';
+    }
+  }
+  return h;
+}
+
+/* ---------- Läufe ---------- */
+function parseDauer(str) { // "45" (Minuten) | "45:30" | "1:02:15" → Sekunden
+  if (str == null) return null;
+  const teile = String(str).trim().split(':');
+  if (!teile.length || teile.some(t => t.trim() === '' || isNaN(t.replace(',', '.')))) return null;
+  let sec = 0;
+  if (teile.length === 1) sec = parseFloat(teile[0].replace(',', '.')) * 60;
+  else if (teile.length === 2) sec = (+teile[0]) * 60 + (+teile[1]);
+  else if (teile.length === 3) sec = (+teile[0]) * 3600 + (+teile[1]) * 60 + (+teile[2]);
+  else return null;
+  return sec > 0 ? Math.round(sec) : null;
+}
+function fmtDauerColon(sec) { // 3735 → "1:02:15", 2730 → "45:30"
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  return (h ? h + ':' + String(m).padStart(2, '0') : String(m)) + ':' + String(s).padStart(2, '0');
+}
+function fmtPace(secProKm) {
+  if (!isFinite(secProKm) || secProKm <= 0) return '–';
+  return fmtMinSek(secProKm) + ' /km';
+}
+function openRunSheet(runId) {
+  const r = runId ? S.runs.find(x => x.id === runId) : null;
+  openSheet('<div class="sheet-title">' + (r ? 'Lauf bearbeiten' : 'Lauf eintragen') + '</div>' +
+    '<div class="form-row"><label>Datum</label><input type="date" class="input" id="run-date" value="' + (r ? todayStr(new Date(r.startedAt)) : todayStr()) + '"></div>' +
+    '<div class="row-2">' +
+    '<div class="form-row"><label>Distanz (km)</label><input class="input" id="run-km" inputmode="decimal" placeholder="z. B. 5,2" value="' + (r ? fmtInput(r.distanzKm) : '') + '"></div>' +
+    '<div class="form-row"><label>Dauer (mm:ss)</label><input class="input" id="run-dauer" placeholder="z. B. 28:30" value="' + (r ? fmtDauerColon(r.dauerSec) : '') + '"></div></div>' +
+    '<div class="form-row"><label>Notiz (optional)</label><input class="input" id="run-notiz" placeholder="z. B. Intervalle, Strecke" value="' + esc(r && r.notiz ? r.notiz : '') + '"></div>' +
+    '<div class="sheet-actions"><button class="btn btn-primary" data-action="run-save"' + (r ? ' data-id="' + esc(r.id) + '"' : '') + '>Speichern</button>' +
+    (r ? '<button class="btn btn-danger" data-action="run-del" data-id="' + esc(r.id) + '">Löschen</button>' : '') + '</div>');
+}
+function renderWorkoutDetail() {
+  const w = S.workouts.find(x => x.id === verlaufSub.id);
+  if (!w) { verlaufSub = null; return renderVerlauf(); }
+  if (editDraft) return renderWorkoutEdit();
+  const prSets = new Set(allPrEvents().filter(ev => ev.w.id === w.id).map(ev => ev.set));
+  let h = '<button class="back-btn" data-action="verlauf-home">‹ Verlauf</button>' +
+    '<h1 class="view-title" style="font-size:24px">' + esc(w.name) +
+    '<small>' + fmtDatumLang(w.startedAt) + ', ' + fmtUhrzeit(w.startedAt) + ' Uhr</small></h1>';
+  h += '<div class="stat-grid stat-grid-3">' +
+    '<div class="stat-tile"><div class="stat-val">' + (w.finishedAt ? fmtDauer((w.finishedAt - w.startedAt) / 1000) : '–') + '</div><div class="stat-lab">Dauer</div></div>' +
+    '<div class="stat-tile"><div class="stat-val">' + fmtVol(workoutVolume(w)) + '</div><div class="stat-lab">Volumen</div></div>' +
+    '<div class="stat-tile"><div class="stat-val">' + workoutSetCount(w) + '</div><div class="stat-lab">Sätze</div></div></div>';
+  h += '<div class="card">';
+  w.exercises.forEach((wex, i) => {
+    const ex = exById(wex.exId);
+    if (i) h += '<div class="divider"></div>';
+    h += '<div class="hist-ex-name">' + esc(ex.name) + '</div>';
+    let n = 0;
+    wex.sets.forEach(s => {
+      if (!s.warmup) n++;
+      h += '<div class="hist-set"><span class="hs-n">' + (s.warmup ? 'W' : n) + '</span>' +
+        '<span class="hs-main">' + fmtKg(s.kg) + ' kg × ' + s.reps + '</span>' +
+        (s.rpe ? '<span class="hs-sub">RPE ' + fmtKg(s.rpe) + '</span>' : '') +
+        (s.restSec != null ? '<span class="hs-sub">Pause ' + fmtMinSek(s.restSec) + '</span>' : '') +
+        (prSets.has(s) ? '<span class="badge-pr">PR</span>' : '') + '</div>';
+    });
+  });
+  h += '</div>';
+  if (w.notiz) h += '<div class="info-box">Notiz: ' + esc(w.notiz) + '</div>';
+  h += '<div class="row-2" style="margin-top:6px"><button class="btn" data-action="wo-edit">Bearbeiten</button>' +
+    '<button class="btn btn-danger" data-action="wo-delete">Löschen</button></div>';
+  return h;
+}
+function renderWorkoutEdit() {
+  const d = editDraft;
+  let h = '<button class="back-btn" data-action="wo-edit-cancel">‹ Abbrechen</button>' +
+    '<h1 class="view-title" style="font-size:24px">Training bearbeiten</h1>' +
+    '<div class="form-row"><label>Name</label><input class="input" value="' + esc(d.name) + '" data-einput="name"></div>' +
+    '<div class="row-2"><div class="form-row"><label>Datum</label><input type="date" class="input" value="' + todayStr(new Date(d.startedAt)) + '" data-einput="datum"></div>' +
+    '<div class="form-row"><label>Uhrzeit</label><input type="time" class="input" value="' + fmtUhrzeit(d.startedAt) + '" data-einput="zeit"></div></div>' +
+    '<div class="mini-note" style="margin:-6px 0 12px">Spalten: Aufwärmsatz · kg · Wdh. · RPE · Pause (s)</div>';
+  d.exercises.forEach((wex, xi) => {
+    const ex = exById(wex.exId);
+    h += '<div class="card"><div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
+      '<div class="li-title" style="flex:1;font-size:15px">' + esc(ex.name) + '</div>' +
+      '<button class="del-btn" data-action="edit-ex-del" data-x="' + xi + '">×</button></div>';
+    wex.sets.forEach((s, si) => {
+      const dx = ' data-x="' + xi + '" data-s="' + si + '"';
+      h += '<div class="edit-set-row">' +
+        '<button class="w-toggle' + (s.warmup ? ' on' : '') + '" style="width:26px;height:40px" data-action="edit-set-w"' + dx + '>W</button>' +
+        '<input inputmode="decimal" value="' + fmtInput(s.kg) + '" placeholder="kg" data-einput="kg"' + dx + '>' +
+        '<input inputmode="numeric" value="' + (s.reps != null ? s.reps : '') + '" placeholder="Wdh" data-einput="reps"' + dx + '>' +
+        '<select data-esel="rpe"' + dx + '><option value="">RPE</option>' +
+        RPE_WERTE.map(r => '<option value="' + r + '"' + (String(s.rpe) === r ? ' selected' : '') + '>' + r.replace('.', ',') + '</option>').join('') + '</select>' +
+        '<input inputmode="numeric" value="' + (s.restSec != null ? s.restSec : '') + '" placeholder="P" data-einput="rest"' + dx + '>' +
+        '<button class="del-btn" data-action="edit-set-del"' + dx + '>×</button></div>';
+    });
+    h += '<button class="add-set-btn" data-action="edit-set-add" data-x="' + xi + '">+ Satz</button></div>';
+  });
+  h += '<button class="btn btn-block btn-soft" data-action="edit-ex-add">+ Übung hinzufügen</button>' +
+    '<button class="btn btn-block btn-primary" style="margin-top:14px" data-action="wo-edit-save">Speichern</button>';
+  return h;
+}
+function saveWorkoutEdit() {
+  const d = editDraft;
+  d.name = (d.name || '').trim() || 'Training';
+  /* Datum/Uhrzeit übernehmen, Dauer beibehalten */
+  const dur = (d.finishedAt || d.startedAt) - d.startedAt;
+  if (d._datum || d._zeit) {
+    const datum = d._datum || todayStr(new Date(d.startedAt));
+    const zeit = d._zeit || fmtUhrzeit(d.startedAt);
+    const neu = new Date(datum + 'T' + zeit).getTime();
+    if (!isNaN(neu)) { d.startedAt = neu; d.finishedAt = neu + dur; }
+  }
+  delete d._datum; delete d._zeit;
+  /* Körpergewichtsübungen: leeres kg-Feld = 0 kg Zusatzgewicht (wie im Live-Workout) */
+  d.exercises.forEach(wex => {
+    if (exById(wex.exId).bw) wex.sets.forEach(s => { if (s.kg == null) s.kg = 0; });
+  });
+  /* Kein stilles Verwerfen: Sätze mit Wdh. aber fehlendem Gewicht blockieren die Speicherung */
+  for (const wex of d.exercises) {
+    if (wex.sets.some(s => s.reps != null && s.reps > 0 && s.kg == null)) {
+      showToast('Gewicht fehlt bei ' + exById(wex.exId).name);
+      return;
+    }
+  }
+  /* nur wirklich leere Zeilen (ohne Wdh.) entfernen */
+  d.exercises = d.exercises
+    .map(wex => ({ ...wex, sets: wex.sets.filter(s => s.reps != null && s.reps > 0) }))
+    .filter(wex => wex.sets.length);
+  if (!d.exercises.length) { showToast('Keine gültigen Sätze — lösche stattdessen das Training'); return; }
+  const i = S.workouts.findIndex(w => w.id === d.id);
+  if (i >= 0) S.workouts[i] = d;
+  S.workouts.sort((a, b) => a.startedAt - b.startedAt);
+  editDraft = null;
+  save();
+  render();
+  showToast('Änderungen gespeichert');
+}
+
+/* ---------- View: Übungen ---------- */
+function renderUebungen() {
+  if (uebSub) return renderUebungDetail();
+  let h = '<h1 class="view-title">Übungen</h1>' +
+    '<input class="input" placeholder="Übung suchen…" value="' + esc(uebFilter.q) + '" data-finput="q" style="margin-bottom:10px">' +
+    '<div class="chip-row">' + ['Alle'].concat(MGS).map(m =>
+      '<button class="chip' + ((uebFilter.mg || 'Alle') === m ? ' active' : '') + '" data-action="filter-mg" data-mg="' + esc(m) + '">' + esc(m) + '</button>').join('') + '</div>' +
+    '<div class="chip-row">' + ['Alle Geräte'].concat(EQS).map(m =>
+      '<button class="chip' + ((uebFilter.eq || 'Alle Geräte') === m ? ' active' : '') + '" data-action="filter-eq" data-eq="' + esc(m) + '">' + esc(m) + '</button>').join('') + '</div>' +
+    '<div id="ueb-list">' + uebListHtml() + '</div>' +
+    '<button class="btn btn-block btn-soft" style="margin-top:6px" data-action="cu-new">+ Eigene Übung</button>';
+  return h;
+}
+function uebListHtml() {
+  const q = uebFilter.q.trim().toLowerCase();
+  const list = allExercises().filter(e =>
+    (!q || e.name.toLowerCase().includes(q)) &&
+    (!uebFilter.mg || e.mg === uebFilter.mg) &&
+    (!uebFilter.eq || e.eq === uebFilter.eq));
+  let h = '';
+  const gruppen = MGS.concat([...new Set(list.map(e => e.mg))].filter(m => MGS.indexOf(m) < 0));
+  for (const mg of gruppen) {
+    const items = list.filter(e => e.mg === mg);
+    if (!items.length) continue;
+    h += '<div class="section-title">' + esc(mg) + '</div>';
+    for (const e of items) {
+      const last = lastSessionFor(e.id);
+      let side = '';
+      if (last) {
+        const top = topSet(workingSets(last.wex));
+        if (top) side = fmtKg(top.kg) + ' × ' + top.reps;
+      }
+      h += '<button class="li-item" data-action="ueb-open" data-id="' + esc(e.id) + '">' +
+        '<div class="li-main"><div class="li-title" style="font-size:15px">' + esc(e.name) +
+        (e.id.indexOf('cu-') === 0 ? ' <span class="tag">eigene</span>' : '') + '</div>' +
+        '<div class="li-sub"><span class="tag">' + esc(e.eq) + '</span>' + (e.compound ? '<span class="tag">Grundübung</span>' : '') + '</div></div>' +
+        '<div class="li-side">' + side + '</div><span class="chev">›</span></button>';
+    }
+  }
+  return h || '<div class="empty"><p>Keine Übung gefunden</p></div>';
+}
+function renderUebungDetail() {
+  const ex = exById(uebSub.exId);
+  const sess = sessionsFor(ex.id);
+  const bests = prBests(ex.id);
+  const os = S.exerciseSettings[ex.id] || {};
+  let h = '<button class="back-btn" data-action="ueb-back">‹ Übungen</button>' +
+    '<h1 class="view-title" style="font-size:24px">' + esc(ex.name) +
+    '<small><span class="tag">' + esc(ex.mg) + '</span><span class="tag">' + esc(ex.eq) + '</span>' +
+    (ex.compound ? '<span class="tag">Grundübung</span>' : '') + '</small></h1>';
+  if (ex.hint) h += '<div class="ex-hint" style="margin-bottom:10px">' + esc(ex.hint) + '</div>';
+  h += '<div class="stat-grid stat-grid-3">' +
+    '<div class="stat-tile"><div class="stat-val">' + (bests.maxKg != null ? fmtKg(bests.maxKg) : '–') + '</div><div class="stat-lab">Max. kg' + (ex.bw ? ' (Zusatz)' : '') + '</div></div>' +
+    '<div class="stat-tile"><div class="stat-val">' + (bests.maxE1rm != null ? fmtKg(Math.round(bests.maxE1rm * 10) / 10) : '–') + '</div><div class="stat-lab">e1RM (kg)</div></div>' +
+    '<div class="stat-tile"><div class="stat-val">' + sess.length + '</div><div class="stat-lab">Einheiten</div></div></div>';
+  /* Charts */
+  const mk = (fn, einheit) => sess.map(({ w, wex }) => {
+    const v = fn(wex);
+    return v == null ? null : {
+      x: w.startedAt, xLabel: fmtDatumKurz(w.startedAt), y: v,
+      tip: fmtDatumKurz(w.startedAt) + ': ' + fmtKg(Math.round(v * 10) / 10) + ' ' + einheit
+    };
+  }).filter(Boolean);
+  const nurKoerpergewicht = ex.bw && !sess.some(({ wex }) => workingSets(wex).some(s => s.kg > 0));
+  if (nurKoerpergewicht) {
+    h += chartCard('Wiederholungen (bester Satz)', Charts.lineChart({
+      points: mk(wex => { const r = workingSets(wex).map(s => s.reps); return r.length ? Math.max(...r) : null; }, 'Wdh.'),
+      leer: 'Noch keine Einheiten'
+    }));
+  } else {
+    h += chartCard('Geschätztes 1RM (Epley)', Charts.lineChart({
+      points: mk(wex => {
+        const es = workingSets(wex).map(s => e1rmOf(s.kg, s.reps)).filter(x => x != null);
+        return es.length ? Math.max(...es) : null;
+      }, 'kg'), leer: 'Noch keine Einheiten'
+    }));
+    h += chartCard('Top-Satz-Gewicht', Charts.lineChart({
+      points: mk(wex => { const t = topSet(workingSets(wex)); return t ? t.kg : null; }, 'kg'), leer: 'Noch keine Einheiten'
+    }));
+  }
+  h += chartCard('Volumen pro Einheit', Charts.lineChart({
+    points: mk(wex => workingSets(wex).reduce((a, s) => a + setVolume(s), 0) || null, 'kg'), leer: 'Noch keine Einheiten'
+  }));
+  /* Übungs-Einstellungen */
+  h += '<div class="section-title">Einstellungen</div>' +
+    '<div class="setting-row"><div class="li-main"><div class="li-title" style="font-size:15px">Pausenziel</div>' +
+    '<div class="li-sub">leer = Standard (' + restDefault(ex.id) + ' s)</div></div>' +
+    '<input class="input-mini" inputmode="numeric" placeholder="auto" value="' + (os.restSec || '') + '" data-exset="restSec" data-id="' + esc(ex.id) + '"><span class="li-sub">s</span></div>' +
+    '<div class="form-row"><label>Notiz (z. B. Sitzeinstellung, Griffbreite)</label>' +
+    '<textarea class="input" data-exset="notiz" data-id="' + esc(ex.id) + '">' + esc(os.notiz || '') + '</textarea></div>';
+  /* Historie */
+  h += '<div class="section-title">Historie</div>';
+  if (!sess.length) h += '<div class="empty"><p>Noch keine Einheiten mit dieser Übung.</p></div>';
+  [...sess].reverse().slice(0, 20).forEach(({ w, wex }) => {
+    h += '<div class="card" style="padding:10px 14px"><div class="li-sub" style="margin-bottom:2px">' + fmtDatumLang(w.startedAt) + '</div>' +
+      '<div class="li-title" style="font-size:15px">' +
+      wex.sets.map(s => (s.warmup ? '(' : '') + fmtKg(s.kg) + '×' + s.reps + (s.warmup ? ')' : '')).join(' · ') + '</div></div>';
+  });
+  if (ex.id.indexOf('cu-') === 0) {
+    h += '<button class="btn btn-block btn-danger" style="margin-top:10px" data-action="cu-del" data-id="' + esc(ex.id) + '">Eigene Übung löschen</button>';
+  }
+  return h;
+}
+
+/* ---------- View: Profil (Dashboard) ---------- */
+function renderProfil() {
+  const d30 = Date.now() - 30 * TAG_MS;
+  const wkStart = weekStartMs(0);
+  let ton30 = 0;
+  S.workouts.forEach(w => { if (w.startedAt >= d30) ton30 += workoutVolume(w); });
+  const prs = allPrEvents();
+  const pr30 = prs.filter(ev => ev.w.startedAt >= d30).length;
+  const gesamt = S.workouts.length + S.runs.length;
+  const woche = S.workouts.filter(w => w.startedAt >= wkStart).length + S.runs.filter(r => r.startedAt >= wkStart).length;
+  const km30 = S.runs.filter(r => r.startedAt >= d30).reduce((a, r) => a + r.distanzKm, 0);
+  let h = '<h1 class="view-title">Profil</h1>' + warnHtml() +
+    '<div class="stat-grid">' +
+    '<div class="stat-tile stat-blau"><div class="stat-val">' + gesamt + '</div><div class="stat-lab">Trainings gesamt</div></div>' +
+    '<div class="stat-tile stat-blau"><div class="stat-val">' + woche + '</div><div class="stat-lab">diese Woche</div></div>' +
+    '<div class="stat-tile"><div class="stat-val">' + fmtVol(ton30) + '</div><div class="stat-lab">Volumen (30 Tage)</div></div>' +
+    '<div class="stat-tile"><div class="stat-val">' + pr30 + '</div><div class="stat-lab">PRs (30 Tage)</div></div></div>';
+  if (S.runs.length) {
+    h += '<div class="stat-grid">' +
+      '<div class="stat-tile"><div class="stat-val">' + S.runs.length + '</div><div class="stat-lab">Läufe gesamt</div></div>' +
+      '<div class="stat-tile"><div class="stat-val">' + fmtKg(Math.round(km30 * 10) / 10) + ' km</div><div class="stat-lab">gelaufen (30 Tage)</div></div></div>';
+  }
+  /* Wochenvolumen pro Muskelgruppe */
+  h += '<div class="section-title">Wochenvolumen (12 Wochen)</div>' +
+    '<div class="chip-row">' + ['Alle'].concat(MGS).map(m =>
+      '<button class="chip' + (statMg === m ? ' active' : '') + '" data-action="stat-mg" data-mg="' + esc(m) + '">' + esc(m) + '</button>').join('') + '</div>';
+  const weeks = weeklyStats(12);
+  const wert = wk => statMode === 'saetze'
+    ? (statMg === 'Alle' ? wk.saetzeGesamt : (wk.saetze[statMg] || 0))
+    : (statMg === 'Alle' ? wk.tonnageGesamt : (wk.tonnage[statMg] || 0));
+  const bars = weeks.map(wk => ({
+    label: String(kwNummer(wk.start)), value: wert(wk),
+    tip: wk.label + ': ' + (statMode === 'saetze' ? wert(wk) + ' Sätze' : fmtVol(wert(wk)))
+  }));
+  h += '<div class="card chart-card"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px">' +
+    '<h3 style="margin:0">' + esc(statMg) + '</h3>' +
+    '<div class="seg"><button class="' + (statMode === 'saetze' ? 'active' : '') + '" data-action="stat-mode" data-mode="saetze">Sätze</button>' +
+    '<button class="' + (statMode === 'tonnage' ? 'active' : '') + '" data-action="stat-mode" data-mode="tonnage">Tonnage</button></div></div>' +
+    Charts.barChart({ bars, yFmt: statMode === 'tonnage' ? fmtVol : undefined, leer: 'Noch keine Trainingsdaten' }) + '</div>';
+  /* Trainings pro Woche (Kraft + Läufe) */
+  const runsProWoche = weeks.map(wk => S.runs.filter(r => r.startedAt >= wk.start && r.startedAt < wk.end).length);
+  h += '<div class="section-title">Trainings pro Woche</div><div class="card chart-card">' +
+    Charts.barChart({
+      bars: weeks.map((wk, i) => ({
+        label: String(kwNummer(wk.start)), value: wk.workouts + runsProWoche[i],
+        tip: wk.label + ': ' + wk.workouts + ' Kraft · ' + runsProWoche[i] + ' Läufe'
+      })),
+      leer: 'Noch keine Trainingsdaten'
+    }) + '</div>';
+  /* PR-Liste */
+  h += '<div class="section-title">Letzte PRs</div>';
+  const recent = prs.slice(-12).reverse();
+  if (!recent.length) h += '<div class="empty"><p>Noch keine PRs — leg los!</p></div>';
+  recent.forEach(ev => {
+    h += '<div class="card" style="padding:10px 14px"><div style="display:flex;align-items:center;gap:8px">' +
+      '<div class="li-main"><div class="li-title" style="font-size:15px">' + esc(exById(ev.exId).name) + '</div>' +
+      '<div class="li-sub">' + fmtDatumKurz(ev.w.startedAt) + ' · ' + esc(ev.pr.text) + '</div></div>' +
+      '<span class="badge-pr">PR</span></div></div>';
+  });
+  return h;
+}
+
+/* ---------- View: Daten (Persönliches + Einstellungen) ---------- */
+function renderDaten() {
+  const st = S.settings;
+  let h = '<h1 class="view-title">Daten</h1>' + warnHtml();
+  /* Persönliche Daten */
+  h += '<div class="section-title">Persönliche Daten</div>';
+  h += '<div class="card chart-card"><h3>Körpergewicht</h3>';
+  if (S.bodyweight.length) {
+    const letzte = S.bodyweight[S.bodyweight.length - 1];
+    const vor7 = [...S.bodyweight].reverse().find(b => new Date(b.date + 'T12:00').getTime() <= new Date(letzte.date + 'T12:00').getTime() - 6 * TAG_MS);
+    const delta = vor7 ? letzte.kg - vor7.kg : null;
+    let bmiTxt = '';
+    if (st.groesseCm > 0) {
+      const bmi = letzte.kg / Math.pow(st.groesseCm / 100, 2);
+      bmiTxt = (delta != null ? ' · ' : '') + 'BMI ' + fmtKg(Math.round(bmi * 10) / 10);
+    }
+    h += '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;gap:8px;flex-wrap:wrap">' +
+      '<div class="stat-val">' + fmtKg(letzte.kg) + ' kg</div>' +
+      '<div class="li-sub">' + (delta != null ? (delta > 0 ? '+' : '') + fmtKg(Math.round(delta * 10) / 10) + ' kg ggü. Vorwoche' : '') + bmiTxt + '</div></div>';
+    h += Charts.lineChart({
+      points: S.bodyweight.map(b => {
+        const x = new Date(b.date + 'T12:00').getTime();
+        return { x, xLabel: fmtDatumKurz(x), y: b.kg, tip: fmtDatumKurz(x) + ': ' + fmtKg(b.kg) + ' kg' };
+      }), trend: true
+    });
+    h += '<div class="mini-note">Gestrichelte Linie: 7-Tage-Durchschnitt</div>';
+  } else {
+    h += '<div class="chart-leer">Noch kein Körpergewicht erfasst</div>';
+  }
+  h += '<button class="btn btn-block btn-soft" style="margin-top:10px" data-action="bw-add">+ Gewicht eintragen</button></div>';
+  h += settingRow('Größe', 'in cm — für den BMI', miniInput('groesseCm', st.groesseCm || ''));
+  h += '<div class="section-title">Darstellung & Signale</div>' +
+    settingRow('Design', 'Automatisch folgt dem System',
+      '<select data-set="theme">' +
+      [['auto', 'Automatisch'], ['hell', 'Hell'], ['dunkel', 'Dunkel']].map(o =>
+        '<option value="' + o[0] + '"' + (st.theme === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>') +
+    settingRow('Ton', 'Piepton am Pausenende',
+      switchHtml('sound', st.sound)) +
+    settingRow('Vibration', 'wo unterstützt (Android)',
+      switchHtml('vibration', st.vibration));
+  h += '<div class="section-title">Training</div>' +
+    settingRow('Pause Grundübung', 'Standard in Sekunden', miniInput('restCompound', st.restCompound)) +
+    settingRow('Pause Isolationsübung', 'Standard in Sekunden', miniInput('restIsolation', st.restIsolation)) +
+    settingRow('Steigerungsschritt', 'Oberkörper (kg)', miniInput('incUpper', fmtInput(st.incUpper))) +
+    settingRow('Steigerungsschritt', 'Beine/Gesäß-Grundübungen (kg)', miniInput('incLower', fmtInput(st.incLower)));
+  h += '<div class="section-title">Datenverwaltung</div>' +
+    '<div class="info-box">Deine Daten liegen im Browser-Speicher <b>dieses Geräts</b> und hängen am Speicherort der App — die Kraftlog.app also nicht verschieben oder umbenennen. Zum Übertragen auf ein anderes Gerät (z. B. iPhone) und als Backup: Export → Import.' +
+    (st.lastExport ? '<br>Letzter Export: ' + fmtDatumLang(st.lastExport) : '<br>Noch kein Export gemacht.') + '</div>' +
+    '<button class="btn btn-block btn-primary" data-action="export-json">Export als JSON-Datei</button>' +
+    '<button class="btn btn-block" style="margin-top:10px" data-action="export-clip">Export in Zwischenablage</button>' +
+    '<button class="btn btn-block" style="margin-top:10px" data-action="import-open">Import…</button>';
+  let backup = null;
+  try { backup = localStorage.getItem(BACKUP_KEY); } catch (e) { }
+  if (backup) h += '<button class="btn btn-block" style="margin-top:10px" data-action="backup-restore">Backup wiederherstellen</button>';
+  h += '<button class="btn btn-block btn-danger" style="margin-top:22px" data-action="wipe">Alle Daten löschen…</button>';
+  h += '<div class="mini-note" style="text-align:center;margin-top:20px">Kraftlog v1 · ' + allExercises().length + ' Übungen · Daten-Schema v' + SCHEMA_VERSION + '</div>';
+  return h;
+}
+function settingRow(title, sub, control) {
+  return '<div class="setting-row"><div class="li-main"><div class="li-title" style="font-size:15px">' + esc(title) + '</div>' +
+    '<div class="li-sub" style="white-space:normal">' + esc(sub) + '</div></div>' + control + '</div>';
+}
+function switchHtml(key, on) {
+  return '<label class="switch"><input type="checkbox" data-set="' + key + '"' + (on ? ' checked' : '') + '><span class="knob"></span></label>';
+}
+function miniInput(key, val) {
+  return '<input class="input-mini" inputmode="decimal" value="' + val + '" data-set="' + key + '">';
+}
+
+/* ---------- Export / Import ---------- */
+function doExport() {
+  const data = JSON.stringify(S, null, 1);
+  const name = 'kraftlog-export-' + todayStr() + '.json';
+  try {
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    S.settings.lastExport = Date.now();
+    save();
+    showToast('Export: ' + name);
+    render();
+  } catch (e) {
+    exportClipboard();
+  }
+}
+function exportClipboard() {
+  const data = JSON.stringify(S);
+  const fertig = () => {
+    S.settings.lastExport = Date.now();
+    save();
+    showToast('In Zwischenablage kopiert');
+    render();
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(data).then(fertig, () => exportTextarea(data));
+  } else {
+    exportTextarea(data);
+  }
+}
+function exportTextarea(data) {
+  openSheet('<div class="sheet-title">Export</div><div class="sheet-sub">Text markieren und kopieren:</div>' +
+    '<textarea class="input" style="min-height:150px" readonly onclick="this.select()">' + esc(data) + '</textarea>');
+  S.settings.lastExport = Date.now();
+  save();
+}
+function tryImport(text) {
+  let obj;
+  try { obj = JSON.parse(text); } catch (e) { showToast('Ungültiges JSON'); return; }
+  if (!obj || typeof obj !== 'object' || typeof obj.schemaVersion !== 'number' || !Array.isArray(obj.workouts)) {
+    showToast('Keine gültige Kraftlog-Datei');
+    return;
+  }
+  if (obj.schemaVersion > SCHEMA_VERSION) { showToast('Datei stammt aus einer neueren App-Version'); return; }
+  try { localStorage.setItem(BACKUP_KEY, JSON.stringify(S)); } catch (e) { }
+  readOnly = false;
+  S = migrate(mergeState(obj));
+  verlaufSub = null; uebSub = null; trainSub = null; editDraft = null; tplDraft = null;
+  save();
+  closeSheet();
+  applyTheme();
+  render();
+  showToast('Import erfolgreich — vorherige Daten als Backup gesichert');
+}
+
+/* ---------- Theme ---------- */
+function applyTheme() {
+  const t = S.settings.theme;
+  if (t === 'hell' || t === 'dunkel') document.documentElement.dataset.theme = t;
+  else delete document.documentElement.dataset.theme;
+}
+
+/* ---------- Aktionen (Klick-Dispatch über data-action) ---------- */
+const ACTIONS = {
+  'tab': el => { tab = el.dataset.tab; trainSub = null; uebSub = null; verlaufSub = null; editDraft = null; tplDraft = null; closeSheet(); render(); window.scrollTo(0, 0); },
+  'sheet-close': () => closeSheet(),
+
+  /* Training / Pläne */
+  'train-home': () => { trainSub = null; tplDraft = null; render(); },
+  'plaene': () => { trainSub = 'plaene'; tplDraft = null; render(); },
+  'tpl-new': () => { tplDraft = { id: null, name: '', createdAt: null, exercises: [] }; trainSub = 'tpl-editor'; render(); },
+  'tpl-edit': el => {
+    const t = S.templates.find(x => x.id === el.dataset.id);
+    if (!t) return;
+    tplDraft = JSON.parse(JSON.stringify(t));
+    trainSub = 'tpl-editor';
+    render();
+  },
+  'tpl-add-ex': () => openExercisePicker(id => {
+    tplDraft.exercises.push({ exId: id, sets: 3, repMin: 8, repMax: 12, restSec: null });
+    render();
+  }),
+  'tpl-ex-up': el => { const i = +el.dataset.i; if (i > 0) { const a = tplDraft.exercises; [a[i - 1], a[i]] = [a[i], a[i - 1]]; render(); } },
+  'tpl-ex-down': el => { const i = +el.dataset.i; const a = tplDraft.exercises; if (i < a.length - 1) { [a[i + 1], a[i]] = [a[i], a[i + 1]]; render(); } },
+  'tpl-ex-del': el => { tplDraft.exercises.splice(+el.dataset.i, 1); render(); },
+  'tpl-save': () => {
+    if (!tplDraft.name.trim()) { showToast('Bitte einen Namen eingeben'); return; }
+    if (!tplDraft.exercises.length) { showToast('Bitte mindestens eine Übung hinzufügen'); return; }
+    tplDraft.name = tplDraft.name.trim();
+    if (tplDraft.id) {
+      const i = S.templates.findIndex(t => t.id === tplDraft.id);
+      if (i >= 0) S.templates[i] = tplDraft;
+    } else {
+      tplDraft.id = 't-' + Date.now();
+      tplDraft.createdAt = Date.now();
+      S.templates.push(tplDraft);
+    }
+    save();
+    tplDraft = null;
+    trainSub = 'plaene';
+    render();
+    showToast('Plan gespeichert');
+  },
+  'tpl-del': () => openSheet('<div class="sheet-title">Plan löschen?</div><div class="sheet-sub">„' + esc(tplDraft.name) + '" wird entfernt. Deine Trainings im Verlauf bleiben erhalten.</div>' +
+    '<div class="sheet-actions"><button class="btn btn-danger" data-action="tpl-del-confirm">Löschen</button>' +
+    '<button class="btn" data-action="sheet-close">Abbrechen</button></div>'),
+  'tpl-del-confirm': () => {
+    S.templates = S.templates.filter(t => t.id !== tplDraft.id);
+    save();
+    tplDraft = null;
+    trainSub = 'plaene';
+    closeSheet();
+    render();
+  },
+
+  /* Aktives Workout */
+  'wo-start': el => startWorkout(el.dataset.tpl || null),
+  'wo-menu': () => {
+    const aw = S.activeWorkout;
+    if (!aw) return;
+    openSheet('<div class="sheet-title">' + esc(aw.name) + '</div><div class="sheet-actions">' +
+      '<button class="btn" data-action="wo-add-ex">+ Übung hinzufügen</button>' +
+      '<button class="btn" data-action="wo-note">Notiz ' + (aw.notiz ? 'bearbeiten' : 'hinzufügen') + '</button>' +
+      '<button class="btn btn-danger" data-action="wo-discard">Training verwerfen</button></div>');
+  },
+  'wo-add-ex': () => {
+    openExercisePicker(id => {
+      S.activeWorkout.exercises.push(buildWoExercise(id, 3, null, null, null));
+      save();
+      render();
+    });
+  },
+  'wo-note': () => {
+    const aw = S.activeWorkout;
+    openSheet('<div class="sheet-title">Notiz</div>' +
+      '<textarea class="input" id="wo-note-text" placeholder="z. B. wenig geschlafen, neues Gym…">' + esc(aw.notiz || '') + '</textarea>' +
+      '<div class="sheet-actions"><button class="btn btn-primary" data-action="wo-note-save">Speichern</button></div>');
+  },
+  'wo-note-save': () => {
+    S.activeWorkout.notiz = $('#wo-note-text').value.trim();
+    save();
+    closeSheet();
+    render();
+  },
+  'wo-finish': () => {
+    const aw = S.activeWorkout;
+    if (!aw) return;
+    let nArbeit = 0, nOffen = 0, vol = 0;
+    aw.exercises.forEach(wex => wex.sets.forEach(s => {
+      if (s.done === true) { if (!s.warmup) { nArbeit++; vol += setVolume(s); } }
+      else nOffen++;
+    }));
+    if (!nArbeit) {
+      openSheet('<div class="sheet-title">Leeres Training</div><div class="sheet-sub">Es wurden keine Arbeitssätze abgehakt. Training verwerfen?</div>' +
+        '<div class="sheet-actions"><button class="btn btn-danger" data-action="wo-discard-confirm">Verwerfen</button>' +
+        '<button class="btn" data-action="sheet-close">Weiter trainieren</button></div>');
+      return;
+    }
+    openSheet('<div class="sheet-title">Training beenden?</div>' +
+      '<div class="sheet-sub">' + nArbeit + ' Arbeitssätze · ' + fmtVol(vol) + ' Volumen · ' + fmtDauer((Date.now() - aw.startedAt) / 1000) +
+      (nOffen ? '<br>' + nOffen + ' nicht abgehakte Sätze werden verworfen.' : '') + '</div>' +
+      '<div class="sheet-actions"><button class="btn btn-green" data-action="wo-finish-confirm">Speichern & beenden</button>' +
+      '<button class="btn" data-action="sheet-close">Weiter trainieren</button></div>');
+  },
+  'wo-finish-confirm': () => finishWorkout(),
+  'wo-discard': () => openSheet('<div class="sheet-title">Training verwerfen?</div><div class="sheet-sub">Alle Eingaben dieses Trainings gehen verloren.</div>' +
+    '<div class="sheet-actions"><button class="btn btn-danger" data-action="wo-discard-confirm">Verwerfen</button>' +
+    '<button class="btn" data-action="sheet-close">Abbrechen</button></div>'),
+  'wo-discard-confirm': () => discardWorkout(),
+  'check': el => checkSet(+el.dataset.ex, +el.dataset.set),
+  'warmup': el => {
+    const aw = S.activeWorkout;
+    if (!aw) return;
+    const s = aw.exercises[+el.dataset.ex].sets[+el.dataset.set];
+    s.warmup = !s.warmup;
+    save();
+    render();
+  },
+  'step': el => {
+    const aw = S.activeWorkout;
+    if (!aw) return;
+    const s = aw.exercises[+el.dataset.ex].sets[+el.dataset.set];
+    if (s.done === true) return;
+    const feld = el.dataset.field;
+    const inc = feld === 'kg' ? 2.5 : 1;
+    let v = (s[feld] != null ? s[feld] : 0) + inc * (+el.dataset.dir);
+    if (v < 0) v = 0;
+    if (feld === 'reps') v = Math.round(v);
+    s[feld] = v;
+    const inp = el.parentElement.querySelector('input');
+    if (inp) inp.value = feld === 'kg' ? fmtInput(v) : v;
+    saveSoon();
+  },
+  'prog-apply': el => {
+    const kg = parseNum(el.dataset.kg);
+    if (kg == null) return;
+    S.activeWorkout.exercises[+el.dataset.ex].sets.forEach(s => {
+      if (s.done !== true && !s.warmup) s.kg = kg;
+    });
+    save();
+    render();
+    showToast('Vorschlag übernommen');
+  },
+  'set-add': el => {
+    const wex = S.activeWorkout.exercises[+el.dataset.ex];
+    const letzter = wex.sets[wex.sets.length - 1];
+    wex.sets.push({ kg: letzter ? letzter.kg : null, reps: letzter ? letzter.reps : null, rpe: null, warmup: false, done: false, doneAt: null, restSec: null });
+    save();
+    render();
+  },
+  'set-del': el => {
+    const aw = S.activeWorkout;
+    const xi = +el.dataset.ex;
+    const wex = aw.exercises[xi];
+    for (let i = wex.sets.length - 1; i >= 0; i--) {
+      if (wex.sets[i].done !== true) {
+        wex.sets.splice(i, 1);
+        /* Pausen-Zeiger mitschieben, damit restSec nicht im falschen Satz landet */
+        if (aw.rest && aw.rest.exIdx === xi) {
+          if (aw.rest.setIdx === i) aw.rest = null;
+          else if (aw.rest.setIdx > i) aw.rest.setIdx--;
+        }
+        if (!wex.sets.length) {
+          aw.exercises.splice(xi, 1);
+          if (aw.rest) {
+            if (aw.rest.exIdx === xi) aw.rest = null;
+            else if (aw.rest.exIdx > xi) aw.rest.exIdx--;
+          }
+        }
+        save();
+        render();
+        return;
+      }
+    }
+    showToast('Alle Sätze sind bereits abgehakt');
+  },
+  'rest-done': () => endRest(true),
+  'rest-skip': () => endRest(false),
+  'rest-plus': () => {
+    const aw = S.activeWorkout;
+    if (!aw || !aw.rest) return;
+    aw.rest.targetSec += 30;
+    if ((Date.now() - aw.rest.startedAt) / 1000 < aw.rest.targetSec) aw.rest.signaled = false;
+    save();
+    renderTimerBar();
+  },
+  'pick-ex': el => {
+    const cb = pickerCb;
+    closeSheet();
+    if (cb) cb(el.dataset.id);
+  },
+
+  /* Verlauf */
+  'verlauf-home': () => { verlaufSub = null; editDraft = null; render(); },
+  'wo-open': el => { verlaufSub = { id: el.dataset.id }; render(); window.scrollTo(0, 0); },
+  'wo-edit': () => {
+    const w = S.workouts.find(x => x.id === verlaufSub.id);
+    if (!w) return;
+    editDraft = JSON.parse(JSON.stringify(w));
+    render();
+  },
+  'wo-edit-cancel': () => { editDraft = null; render(); },
+  'wo-edit-save': () => saveWorkoutEdit(),
+  'wo-delete': () => {
+    const w = S.workouts.find(x => x.id === verlaufSub.id);
+    openSheet('<div class="sheet-title">Training löschen?</div><div class="sheet-sub">„' + esc(w.name) + '" vom ' + fmtDatumLang(w.startedAt) + ' wird endgültig entfernt.</div>' +
+      '<div class="sheet-actions"><button class="btn btn-danger" data-action="wo-delete-confirm">Löschen</button>' +
+      '<button class="btn" data-action="sheet-close">Abbrechen</button></div>');
+  },
+  'wo-delete-confirm': () => {
+    S.workouts = S.workouts.filter(w => w.id !== verlaufSub.id);
+    verlaufSub = null;
+    save();
+    closeSheet();
+    render();
+    showToast('Training gelöscht');
+  },
+  'edit-set-w': el => {
+    const s = editDraft.exercises[+el.dataset.x].sets[+el.dataset.s];
+    s.warmup = !s.warmup;
+    render();
+  },
+  'edit-set-del': el => {
+    editDraft.exercises[+el.dataset.x].sets.splice(+el.dataset.s, 1);
+    render();
+  },
+  'edit-set-add': el => {
+    const wex = editDraft.exercises[+el.dataset.x];
+    const letzter = wex.sets[wex.sets.length - 1];
+    wex.sets.push({ kg: letzter ? letzter.kg : null, reps: letzter ? letzter.reps : null, rpe: null, warmup: false, doneAt: Date.now(), restSec: null });
+    render();
+  },
+  'edit-ex-del': el => {
+    editDraft.exercises.splice(+el.dataset.x, 1);
+    render();
+  },
+  'edit-ex-add': () => openExercisePicker(id => {
+    editDraft.exercises.push({ exId: id, repMin: null, repMax: null, sets: [{ kg: null, reps: null, rpe: null, warmup: false, doneAt: Date.now(), restSec: null }] });
+    render();
+  }),
+
+  /* Übungen */
+  'ueb-open': el => { uebSub = { exId: el.dataset.id }; render(); window.scrollTo(0, 0); },
+  'ueb-back': () => { uebSub = null; render(); },
+  'filter-mg': el => { uebFilter.mg = el.dataset.mg === 'Alle' ? null : el.dataset.mg; render(); },
+  'filter-eq': el => { uebFilter.eq = el.dataset.eq === 'Alle Geräte' ? null : el.dataset.eq; render(); },
+  'cu-new': () => openSheet('<div class="sheet-title">Eigene Übung</div>' +
+    '<div class="form-row"><label>Name</label><input class="input" id="cu-name" placeholder="z. B. Kabelzug einarmig"></div>' +
+    '<div class="form-row"><label>Muskelgruppe</label><select class="input" id="cu-mg">' + MGS.map(m => '<option>' + esc(m) + '</option>').join('') + '</select></div>' +
+    '<div class="form-row"><label>Equipment</label><select class="input" id="cu-eq">' + EQS.map(m => '<option>' + esc(m) + '</option>').join('') + '</select></div>' +
+    '<div class="setting-row" style="box-shadow:none"><div class="li-main"><div class="li-title" style="font-size:15px">Grundübung</div>' +
+    '<div class="li-sub">längere Standardpause</div></div>' +
+    '<label class="switch"><input type="checkbox" id="cu-compound"><span class="knob"></span></label></div>' +
+    '<div class="sheet-actions"><button class="btn btn-primary" data-action="cu-save">Anlegen</button></div>'),
+  'cu-save': () => {
+    const name = $('#cu-name').value.trim();
+    if (!name) { showToast('Bitte einen Namen eingeben'); return; }
+    S.customExercises.push({
+      id: 'cu-' + Date.now(), name,
+      mg: $('#cu-mg').value, eq: $('#cu-eq').value,
+      compound: $('#cu-compound').checked
+    });
+    save();
+    closeSheet();
+    render();
+    showToast('Übung angelegt');
+  },
+  'cu-del': el => {
+    const id = el.dataset.id;
+    if (sessionsFor(id).length) { showToast('Übung wird im Verlauf verwendet — nicht löschbar'); return; }
+    if (S.templates.some(t => t.exercises.some(it => it.exId === id))) { showToast('Übung wird in einem Plan verwendet — nicht löschbar'); return; }
+    S.customExercises = S.customExercises.filter(e => e.id !== id);
+    delete S.exerciseSettings[id];
+    uebSub = null;
+    save();
+    render();
+    showToast('Übung gelöscht');
+  },
+
+  /* Läufe */
+  'run-add': () => openRunSheet(null),
+  'run-open': el => openRunSheet(el.dataset.id),
+  'run-save': el => {
+    const date = $('#run-date').value;
+    const km = parseNum($('#run-km').value);
+    const dauer = parseDauer($('#run-dauer').value);
+    if (!date || !km || km <= 0 || !dauer) { showToast('Bitte Datum, Distanz und Dauer angeben'); return; }
+    const startedAt = new Date(date + 'T12:00').getTime();
+    const notiz = $('#run-notiz').value.trim();
+    if (el.dataset.id) {
+      const r = S.runs.find(x => x.id === el.dataset.id);
+      if (r) Object.assign(r, { startedAt, distanzKm: km, dauerSec: dauer, notiz });
+    } else {
+      S.runs.push({ id: 'r-' + Date.now(), startedAt, distanzKm: km, dauerSec: dauer, notiz });
+    }
+    S.runs.sort((a, b) => a.startedAt - b.startedAt);
+    save();
+    closeSheet();
+    render();
+    showToast('Lauf gespeichert: ' + fmtKg(km) + ' km');
+  },
+  'run-del': el => {
+    S.runs = S.runs.filter(r => r.id !== el.dataset.id);
+    save();
+    closeSheet();
+    render();
+    showToast('Lauf gelöscht');
+  },
+
+  /* Profil-Statistik */
+  'stat-mg': el => { statMg = el.dataset.mg; render(); },
+  'stat-mode': el => { statMode = el.dataset.mode; render(); },
+  'bw-add': () => {
+    let liste = '';
+    [...S.bodyweight].reverse().slice(0, 6).forEach(b => {
+      liste += '<div class="setting-row" style="min-height:44px;padding:8px 12px"><div class="li-main"><div class="li-title" style="font-size:15px">' + fmtKg(b.kg) + ' kg</div>' +
+        '<div class="li-sub">' + b.date.split('-').reverse().join('.') + '</div></div>' +
+        '<button class="del-btn" data-action="bw-del" data-date="' + b.date + '">×</button></div>';
+    });
+    openSheet('<div class="sheet-title">Körpergewicht</div>' +
+      '<div class="form-row"><label>Datum</label><input type="date" class="input" id="bw-date" value="' + todayStr() + '"></div>' +
+      '<div class="form-row"><label>Gewicht (kg)</label><input class="input" id="bw-kg" inputmode="decimal" placeholder="z. B. 81,4"></div>' +
+      '<div class="sheet-actions"><button class="btn btn-primary" data-action="bw-save">Speichern</button></div>' +
+      (liste ? '<div class="section-title" style="margin-top:18px">Letzte Einträge</div>' + liste : ''));
+  },
+  'bw-save': () => {
+    const date = $('#bw-date').value;
+    const kg = parseNum($('#bw-kg').value);
+    if (!date || kg == null || kg <= 0) { showToast('Bitte Datum und Gewicht angeben'); return; }
+    S.bodyweight = S.bodyweight.filter(b => b.date !== date);
+    S.bodyweight.push({ date, kg });
+    S.bodyweight.sort((a, b) => (a.date < b.date ? -1 : 1));
+    save();
+    closeSheet();
+    render();
+    showToast('Gespeichert: ' + fmtKg(kg) + ' kg');
+  },
+  'bw-del': el => {
+    S.bodyweight = S.bodyweight.filter(b => b.date !== el.dataset.date);
+    save();
+    closeSheet();
+    render();
+  },
+
+  /* Daten */
+  'export-json': () => doExport(),
+  'export-clip': () => exportClipboard(),
+  'import-open': () => openSheet('<div class="sheet-title">Import</div>' +
+    '<div class="sheet-sub">JSON-Datei wählen oder Text einfügen. Die aktuellen Daten werden vorher automatisch als Backup gesichert.</div>' +
+    '<input type="file" id="imp-file" accept=".json,application/json" class="input" style="padding:11px">' +
+    '<div class="form-row" style="margin-top:10px"><label>… oder JSON-Text einfügen</label><textarea class="input" id="imp-text"></textarea></div>' +
+    '<div class="sheet-actions"><button class="btn btn-primary" data-action="imp-go">Importieren</button></div>'),
+  'imp-go': () => {
+    const f = $('#imp-file').files[0];
+    if (f) {
+      const r = new FileReader();
+      r.onload = () => tryImport(r.result);
+      r.readAsText(f);
+    } else {
+      const t = $('#imp-text').value.trim();
+      if (!t) { showToast('Bitte Datei wählen oder Text einfügen'); return; }
+      tryImport(t);
+    }
+  },
+  'backup-restore': () => openSheet('<div class="sheet-title">Backup wiederherstellen?</div>' +
+    '<div class="sheet-sub">Der aktuelle Stand wird mit dem Backup getauscht (erneutes Wiederherstellen macht das rückgängig).</div>' +
+    '<div class="sheet-actions"><button class="btn btn-primary" data-action="backup-restore-confirm">Wiederherstellen</button>' +
+    '<button class="btn" data-action="sheet-close">Abbrechen</button></div>'),
+  'backup-restore-confirm': () => {
+    let backup = null;
+    try { backup = localStorage.getItem(BACKUP_KEY); } catch (e) { }
+    if (!backup) { showToast('Kein Backup vorhanden'); return; }
+    let obj;
+    try { obj = JSON.parse(backup); } catch (e) { showToast('Backup ist beschädigt'); return; }
+    try { localStorage.setItem(BACKUP_KEY, JSON.stringify(S)); } catch (e) { }
+    readOnly = false;
+    S = migrate(mergeState(obj));
+    verlaufSub = null; uebSub = null; trainSub = null; editDraft = null; tplDraft = null;
+    save();
+    closeSheet();
+    applyTheme();
+    render();
+    showToast('Backup wiederhergestellt');
+  },
+  'wipe': () => openSheet('<div class="sheet-title">Alle Daten löschen?</div>' +
+    '<div class="sheet-sub">Alle Trainings, Pläne und Einstellungen werden entfernt. Das lässt sich nicht rückgängig machen — vorher exportieren!</div>' +
+    '<div class="sheet-actions"><button class="btn btn-danger" data-action="wipe-confirm">Ja, endgültig löschen</button>' +
+    '<button class="btn" data-action="sheet-close">Abbrechen</button></div>'),
+  'wipe-confirm': () => {
+    readOnly = false;
+    S = defaults();
+    verlaufSub = null; uebSub = null; trainSub = null; editDraft = null; tplDraft = null;
+    save();
+    closeSheet();
+    applyTheme();
+    render();
+    showToast('Alle Daten gelöscht');
+  }
+};
+
+/* ---------- Event-Delegation ---------- */
+document.addEventListener('click', e => {
+  const dot = e.target.closest('.chart-dot');
+  if (dot) { showChartTip(dot); return; }
+  hideChartTip();
+  const el = e.target.closest('[data-action]');
+  if (!el) return;
+  const fn = ACTIONS[el.dataset.action];
+  if (fn) fn(el, e);
+});
+
+document.addEventListener('input', e => {
+  const el = e.target;
+  /* Aktives Workout: kg / Wdh. */
+  if (el.dataset.winput) {
+    const aw = S.activeWorkout;
+    if (!aw) return;
+    const s = aw.exercises[+el.dataset.ex].sets[+el.dataset.set];
+    let v = parseNum(el.value);
+    if (v != null && v < 0) v = 0;
+    if (el.dataset.winput === 'reps' && v != null) v = Math.round(v);
+    s[el.dataset.winput] = v;
+    saveSoon();
+    return;
+  }
+  /* Vorlagen-Editor */
+  if (el.dataset.tinput) { tplDraft[el.dataset.tinput] = el.value; return; }
+  if (el.dataset.tex) {
+    const it = tplDraft.exercises[+el.dataset.i];
+    const v = parseNum(el.value);
+    if (el.dataset.tex === 'restSec') it.restSec = v && v > 0 ? Math.round(v) : null;
+    else if (v != null && v > 0) it[el.dataset.tex] = Math.round(v);
+    return;
+  }
+  /* Übungen-Suche & Picker-Suche (nur Liste neu rendern, Fokus behalten) */
+  if (el.dataset.finput) {
+    uebFilter.q = el.value;
+    const list = $('#ueb-list');
+    if (list) list.innerHTML = uebListHtml();
+    return;
+  }
+  if (el.dataset.pinput) {
+    const list = $('#picker-list');
+    if (list) list.innerHTML = pickerListHtml(el.value);
+    return;
+  }
+  /* Verlauf-Editor */
+  if (el.dataset.einput) {
+    const k = el.dataset.einput;
+    if (k === 'name') { editDraft.name = el.value; return; }
+    if (k === 'datum') { editDraft._datum = el.value; return; }
+    if (k === 'zeit') { editDraft._zeit = el.value; return; }
+    const s = editDraft.exercises[+el.dataset.x].sets[+el.dataset.s];
+    let v = parseNum(el.value);
+    if (v != null && v < 0) v = 0;
+    if (k === 'kg') s.kg = v;
+    else if (k === 'reps') s.reps = v != null ? Math.round(v) : null;
+    else if (k === 'rest') s.restSec = v != null ? Math.round(v) : null;
+    return;
+  }
+  /* Übungs-Einstellungen */
+  if (el.dataset.exset) {
+    const id = el.dataset.id;
+    const o = S.exerciseSettings[id] || (S.exerciseSettings[id] = {});
+    if (el.dataset.exset === 'restSec') {
+      const v = parseNum(el.value);
+      if (v && v > 0) o.restSec = Math.round(v);
+      else delete o.restSec;
+    } else {
+      o.notiz = el.value;
+    }
+    saveSoon();
+    return;
+  }
+  /* Einstellungen (Zahlenfelder) */
+  if (el.dataset.set && el.type !== 'checkbox' && el.tagName !== 'SELECT') {
+    const v = parseNum(el.value);
+    if (v != null && v > 0) { S.settings[el.dataset.set] = v; saveSoon(); }
+    return;
+  }
+});
+
+document.addEventListener('change', e => {
+  const el = e.target;
+  /* RPE im aktiven Workout */
+  if (el.dataset.wsel === 'rpe') {
+    const aw = S.activeWorkout;
+    if (!aw) return;
+    const s = aw.exercises[+el.dataset.ex].sets[+el.dataset.set];
+    s.rpe = el.value ? parseFloat(el.value) : null;
+    el.classList.toggle('set', !!el.value);
+    saveSoon();
+    return;
+  }
+  /* RPE im Verlauf-Editor */
+  if (el.dataset.esel === 'rpe') {
+    const s = editDraft.exercises[+el.dataset.x].sets[+el.dataset.s];
+    s.rpe = el.value ? parseFloat(el.value) : null;
+    return;
+  }
+  /* Einstellungen (Schalter & Selects) */
+  if (el.dataset.set) {
+    const k = el.dataset.set;
+    if (k === 'theme') { S.settings.theme = el.value; applyTheme(); }
+    else if (el.type === 'checkbox') S.settings[k] = el.checked;
+    save();
+    return;
+  }
+});
+
+/* ---------- Ticker & Start ---------- */
+function tick() {
+  renderTimerBar();
+  const el = $('#wo-elapsed');
+  if (el && S.activeWorkout) el.textContent = fmtDauer((Date.now() - S.activeWorkout.startedAt) / 1000);
+}
+function maybeResumePrompt() {
+  const aw = S.activeWorkout;
+  if (!aw) return;
+  openSheet('<div class="sheet-title">Training fortsetzen?</div>' +
+    '<div class="sheet-sub">„' + esc(aw.name) + '" vom ' + fmtDatumLang(aw.startedAt) + ', ' + fmtUhrzeit(aw.startedAt) + ' Uhr ist noch offen.</div>' +
+    '<div class="sheet-actions"><button class="btn btn-primary" data-action="sheet-close">Fortsetzen</button>' +
+    '<button class="btn" data-action="wo-finish">Beenden & speichern</button>' +
+    '<button class="btn btn-danger" data-action="wo-discard">Verwerfen</button></div>');
+}
+
+/* Service Worker: nur auf echtem Hosting (https) — macht die installierte
+   iPhone-Version offline-fähig. file:// (Mac-App) und Dev-Server bleiben unberührt. */
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  try { navigator.serviceWorker.register('./sw.js'); } catch (e) { }
+}
+
+applyTheme();
+render();
+maybeResumePrompt();
+setInterval(tick, 500);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { clearTimeout(saveTimer); save(); } // Debounce flushen — iOS feuert beforeunload nicht zuverlässig
+  else renderTimerBar();
+});
+window.addEventListener('beforeunload', () => save());
+})();

@@ -1,0 +1,60 @@
+KRAFTLOG — Quellcode
+====================
+
+Das ist die dauerhafte, bearbeitbare Kopie des App-Quellcodes ("Werkstatt").
+
+WICHTIG: Die tatsächlich laufende Mac-App liegt in
+  ~/Desktop/Kraftlog.app/Contents/Resources/app/
+Deine Trainingsdaten hängen an DIESEM Speicherort (im Browser-Speicher des
+.app-Bundles). Die Kraftlog.app daher NICHT verschieben oder umbenennen —
+sonst startet die App mit leeren Daten. Vor einem Umzug: in der App unter
+„Mehr" → Export als JSON-Datei sichern, danach wieder importieren.
+
+Wenn du (oder Claude) etwas am Code änderst:
+  1. Dateien HIER bearbeiten.
+  2. python3 build.py all --bump
+     (--bump zählt die ?v=N-Cache-Versionen hoch; ohne Änderung an
+      index.html-Einbindungen reicht auch: python3 build.py all)
+  3. Fertig — build.py kopiert alles in die .app und baut zusätzlich
+     dist/kraftlog-artifact.html (die iPhone-/Single-File-Version).
+
+iPhone-Version (eigenständig, ohne Claude):
+  https://vtokyy.github.io/kraftlog/
+  Den Link am iPhone in Safari öffnen und über „Teilen" →
+  „Zum Home-Bildschirm" ablegen. Die App ist eine PWA: Nach dem ersten
+  Öffnen ist alles auf dem iPhone gespeichert (Service Worker) und läuft
+  komplett offline — GitHub wird nur für Installation und Updates gebraucht.
+  Gehostet über GitHub Pages aus dem Repository github.com/vTokyy/kraftlog
+  (dein Account, öffentlich ist nur der App-Code, nie deine Daten).
+  Update einspielen: python3 build.py all --bump, dann
+    git add -A && git commit -m "Update" && git push
+  (oder einfach Claude bitten). Die installierte App holt sich die neue
+  Version beim nächsten Öffnen mit Internet automatisch.
+  Mac und iPhone synchronisieren sich NICHT automatisch — Daten per
+  Export/Import (JSON) übertragen.
+  (dist/kraftlog-artifact.html ist dieselbe App als einzelne Datei — nur
+  als portable Notfall-Kopie, wird nicht gehostet.)
+
+Aufbau:
+  index.html        Grundgerüst, Tab-Bar, Timer-Bar, lädt alle Skripte
+  style.css         Apple-Look (hell/dunkel)
+  exercises.js      Übungsdatenbank (77 Übungen) — hier neue Übungen ergänzen
+  charts.js         SVG-Charts (ohne Fremdbibliotheken)
+  timer.js          Piepton/Vibration für den Pausen-Timer
+  app.js            Die eigentliche App (State, Views, PR-Logik, Export/Import)
+  build.py          Build-Skript (siehe oben)
+  main.applescript  Quelltext des .app-Launchers
+  dist/             generierte Dateien — nie von Hand bearbeiten
+
+Einmalige Neu-Erzeugung der Mac-App (falls Kraftlog.app gelöscht wurde):
+  cd ~/Desktop/Kraftlog-Quellcode
+  osacompile -o ~/Desktop/Kraftlog.app main.applescript
+  python3 build.py app
+  (Achtung: Neu erzeugte .app = neuer Speicherort-Kontext im Browser?
+   Nein — der Pfad bleibt gleich, die Daten bleiben erhalten, solange
+   der Pfad ~/Desktop/Kraftlog.app identisch ist.)
+
+Datensicherheit:
+  - „Mehr" → Export regelmäßig nutzen (die App erinnert nach 7 Tagen).
+  - Vor jedem Import legt die App automatisch ein Backup an
+    („Mehr" → „Backup wiederherstellen" tauscht aktuellen Stand und Backup).

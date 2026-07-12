@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0071e3">
+  <title>Kraftlog — Krafttraining-Tracker</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="stylesheet" href="style.css?v=2">
+</head>
+<body>
+  <div id="app">
+    <main id="view"></main>
+
+    <!-- Pausen-Timer (sticky über der Tab-Bar) -->
+    <div id="timer-bar" class="hidden">
+      <div id="timer-progress-track"><div id="timer-progress"></div></div>
+      <div class="timer-row">
+        <div id="timer-text"></div>
+        <button class="btn btn-small" data-action="rest-plus">+30 s</button>
+        <button class="btn btn-small" data-action="rest-skip">Skip</button>
+        <button class="btn btn-small btn-primary" data-action="rest-done">Los!</button>
+      </div>
+    </div>
+
+    <nav id="tabbar">
+      <button class="tab" data-action="tab" data-tab="profil">
+        <svg class="t-icon" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.6"/><path d="M4.5 19.5c1.2-3.4 4-5.1 7.5-5.1s6.3 1.7 7.5 5.1"/></svg>
+        <span class="t-label">Profil</span></button>
+      <button class="tab" data-action="tab" data-tab="verlauf">
+        <svg class="t-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2.5"/></svg>
+        <span class="t-label">Verlauf</span></button>
+      <button class="tab tab-start active" data-action="tab" data-tab="start">
+        <span class="start-circle"><svg viewBox="0 0 24 24"><path d="M9.2 7.2l7.6 4.8-7.6 4.8z"/></svg></span>
+        <span class="t-label">Start</span></button>
+      <button class="tab" data-action="tab" data-tab="uebungen">
+        <svg class="t-icon" viewBox="0 0 24 24"><path d="M7 7.5v9M17 7.5v9M7 12h10M3.5 9.5v5M20.5 9.5v5"/></svg>
+        <span class="t-label">Übungen</span></button>
+      <button class="tab" data-action="tab" data-tab="daten">
+        <svg class="t-icon" viewBox="0 0 24 24"><path d="M4.5 8h15M4.5 16h15"/><circle cx="9.5" cy="8" r="2.1"/><circle cx="14.5" cy="16" r="2.1"/></svg>
+        <span class="t-label">Daten</span></button>
+    </nav>
+  </div>
+
+  <!-- Bottom-Sheet-Modal -->
+  <div id="sheet" class="hidden">
+    <div id="sheet-backdrop" data-action="sheet-close"></div>
+    <div id="sheet-panel"><div id="sheet-content"></div></div>
+  </div>
+
+  <div id="toast"></div>
+  <div id="confetti"></div>
+  <div id="chart-tip" class="hidden"></div>
+
+  <script src="exercises.js?v=2"></script>
+  <script src="charts.js?v=2"></script>
+  <script src="timer.js?v=2"></script>
+  <script src="app.js?v=2"></script>
+</body>
+</html>
