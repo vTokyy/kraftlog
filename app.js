@@ -3,7 +3,7 @@
  *   settings:        { theme, sound, vibration, restCompound, restIsolation, incUpper, incLower, lastExport }
  *   customExercises: [ { id:'cu-…', name, mg, eq, compound } ]
  *   exerciseSettings:{ exId: { restSec, notiz } }
- *   templates:       [ { id, name, createdAt, exercises:[{exId, restSec, sets:[{reps}]}] } ]  // reps = exaktes Ziel je Satz
+ *   templates:       [ { id, name, createdAt, exercises:[{exId, restSec, sets:[{reps, kg?, warmup?}]}] } ]  // reps/kg = Ziel je Satz
  *   workouts:        [ { id, templateId, name, startedAt, finishedAt, notiz,
  *                        exercises:[{exId, repMin, repMax, sets:[{kg, reps, rpe, warmup, doneAt, restSec}]}] } ]
  *   activeWorkout:   wie workout, Sätze zusätzlich mit done:true/false; rest = laufende Pause
@@ -548,8 +548,10 @@ function setInfoLine(s) {
 function normalizeTplExercise(it) {
   if (Array.isArray(it.sets)) {
     it.sets = it.sets.map(s => {
-      if (s && s.warmup) return { warmup: true, kg: (s.kg > 0 ? Math.round(s.kg * 100) / 100 : 0), reps: (s.reps > 0 ? Math.round(s.reps) : null) };
-      return { reps: (s && s.reps > 0) ? Math.round(s.reps) : null };
+      const reps = (s && s.reps > 0) ? Math.round(s.reps) : null;
+      const kg = (s && s.kg > 0) ? Math.round(s.kg * 100) / 100 : null;
+      if (s && s.warmup) return { warmup: true, kg: (kg != null ? kg : 0), reps };
+      return (kg != null) ? { reps, kg } : { reps };
     });
   } else {
     const n = Math.max(1, Math.min(20, parseInt(it.sets, 10) || 3));
@@ -579,7 +581,7 @@ function buildWoExercise(exId, tplSets, restSec) {
     const ref = lastWs[wi] || lastWs[lastWs.length - 1] || null;
     wi++;
     return {
-      kg: ref ? ref.kg : null,
+      kg: z.kg != null ? z.kg : (ref ? ref.kg : null),   // geplantes Gewicht schlägt „letztes Mal"
       reps: z.reps != null ? z.reps : (ref ? ref.reps : null),
       rpe: null, warmup: false, done: false, doneAt: null, restSec: null
     };
@@ -741,6 +743,7 @@ function renderTplEditor() {
     '<h1 class="view-title" style="font-size:24px">' + (d.id ? 'Plan bearbeiten' : 'Neuer Plan') + '</h1>' +
     '<div class="form-row"><label>Name</label><input class="input" value="' + esc(d.name) + '" placeholder="z. B. Push A" data-tinput="name"></div>' +
     '<div class="section-title">Übungen</div>';
+  if (d.exercises.length) h += '<div class="mini-note" style="margin:-4px 0 10px 2px">Gewicht leer = beim Training vom letzten Mal übernommen. Tipp auf die Zahl links, um einen Satz als Aufwärmsatz (W) zu markieren — Aufwärmsätze zählen nicht in die Statistik.</div>';
   if (!d.exercises.length) h += '<div class="card"><div class="li-sub" style="white-space:normal">Noch keine Übungen im Plan.</div></div>';
   d.exercises.forEach((it, i) => {
     const ex = exById(it.exId);
@@ -754,20 +757,13 @@ function renderTplEditor() {
     let satzN = 0;
     it.sets.forEach((st, j) => {
       const dij = ' data-i="' + i + '" data-j="' + j + '"';
-      if (st.warmup) {
-        h += '<div class="tpl-set-row tpl-set-warm"><span class="tpl-set-n">Aufw.</span>' +
-          '<input class="num-input tpl-set-reps" inputmode="decimal" autocomplete="off" placeholder="kg" value="' + (st.kg != null ? fmtInput(st.kg) : '') + '" data-trole="wkg"' + dij + '>' +
-          '<span class="tpl-set-unit">kg ×</span>' +
-          '<input class="num-input tpl-set-reps" inputmode="numeric" autocomplete="off" placeholder="Wdh" value="' + (st.reps != null ? st.reps : '') + '" data-trole="reps"' + dij + '>' +
-          '<button class="del-btn" style="width:34px;height:34px;margin-left:auto" data-action="tpl-set-del"' + dij + '>×</button></div>';
-        return;
-      }
-      satzN++;
-      h += '<div class="tpl-set-row"><span class="tpl-set-n">Satz ' + satzN + '</span>' +
-        '<button class="step-btn" data-action="tpl-set-step" data-dir="-1"' + dij + '>−</button>' +
+      const warm = !!st.warmup;
+      if (!warm) satzN++;
+      h += '<div class="tpl-set-row' + (warm ? ' tpl-set-warm' : '') + '">' +
+        '<button class="w-toggle' + (warm ? ' on' : '') + '" data-action="tpl-set-warm"' + dij + ' title="Aufwärmsatz umschalten">' + (warm ? 'W' : satzN) + '</button>' +
+        '<input class="num-input tpl-set-kg" inputmode="decimal" autocomplete="off" placeholder="' + (warm ? 'kg' : 'auto') + '" value="' + (st.kg != null ? fmtInput(st.kg) : '') + '" data-trole="kg"' + dij + '>' +
+        '<span class="tpl-set-unit">kg ×</span>' +
         '<input class="num-input tpl-set-reps" inputmode="numeric" autocomplete="off" placeholder="Wdh" value="' + (st.reps != null ? st.reps : '') + '" data-trole="reps"' + dij + '>' +
-        '<button class="step-btn" data-action="tpl-set-step" data-dir="1"' + dij + '>+</button>' +
-        '<span class="tpl-set-unit">Wdh.</span>' +
         '<button class="del-btn" style="width:34px;height:34px;margin-left:auto" data-action="tpl-set-del"' + dij + '>×</button></div>';
     });
     h += '<div class="tpl-ex-foot">' +
@@ -1304,7 +1300,9 @@ const ACTIONS = {
   'tpl-set-add': el => {
     const it = tplDraft.exercises[+el.dataset.i];
     const letzterArbeit = [...it.sets].reverse().find(s => !s.warmup);
-    it.sets.push({ reps: letzterArbeit ? letzterArbeit.reps : 10 });
+    const neu = { reps: letzterArbeit ? letzterArbeit.reps : 10 };
+    if (letzterArbeit && letzterArbeit.kg != null) neu.kg = letzterArbeit.kg;
+    it.sets.push(neu);
     render();
   },
   'tpl-set-del': el => {
@@ -1313,15 +1311,10 @@ const ACTIONS = {
     if (!it.sets.length) tplDraft.exercises.splice(+el.dataset.i, 1); // letzter Satz weg → Übung raus
     render();
   },
-  'tpl-set-step': el => {
-    const it = tplDraft.exercises[+el.dataset.i];
-    const st = it.sets[+el.dataset.j];
-    let v = (st.reps != null ? st.reps : 0) + (+el.dataset.dir);
-    if (v < 1) v = 1;
-    st.reps = v;
-    const inp = el.parentElement.querySelector('input');
-    if (inp) inp.value = v;
-    /* nicht neu rendern → Tastatur/Fokus bleibt; Wert ist im State */
+  'tpl-set-warm': el => {
+    const st = tplDraft.exercises[+el.dataset.i].sets[+el.dataset.j];
+    st.warmup = !st.warmup;
+    render();
   },
   'tpl-warmup': el => {
     const i = +el.dataset.i;
@@ -1758,7 +1751,7 @@ document.addEventListener('input', e => {
       it.restSec = (v != null && v > 0) ? Math.round(v) : null;
     } else if (el.dataset.trole === 'reps') {
       it.sets[+el.dataset.j].reps = (v != null && v > 0) ? Math.round(v) : null;
-    } else if (el.dataset.trole === 'wkg') {
+    } else if (el.dataset.trole === 'kg') {
       it.sets[+el.dataset.j].kg = (v != null && v >= 0) ? v : null;
     }
     return;

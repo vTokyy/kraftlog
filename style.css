@@ -399,9 +399,9 @@ circle.chart-dot { stroke: var(--card); stroke-width: 1.5; }
 .tpl-ex-tools { display: flex; gap: 6px; flex-shrink: 0; }
 .tpl-set-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--sep); }
 .tpl-set-n { width: 52px; font-size: 14px; font-weight: 650; color: var(--text-2); flex-shrink: 0; }
-.tpl-set-reps { max-width: 68px; }
-.tpl-set-unit { font-size: 14px; color: var(--text-2); flex-shrink: 0; }
-.tpl-set-warm .tpl-set-n { color: var(--orange); }
+.tpl-set-reps { max-width: 62px; }
+.tpl-set-kg { max-width: 66px; }
+.tpl-set-unit { font-size: 13px; color: var(--text-2); flex-shrink: 0; }
 .tpl-set-warm .num-input { background: var(--orange-soft); }
 .tpl-ex-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 6px; border-top: 1px solid var(--sep); padding-top: 4px; }
 .tpl-warmup-btn { color: var(--orange) !important; }
