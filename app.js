@@ -260,6 +260,42 @@ function allPrEvents() {
   return events;
 }
 
+/* ---------- Aufwärmsätze berechnen ----------
+ * Rampe in Prozent des Arbeitsgewichts, mit weniger Wdh. je schwerer.
+ * Für Langhantel/SZ/Multipresse startet es mit der leeren Stange; nie über dem Arbeitsgewicht.
+ * Gerundet auf 2,5-kg-Schritte. Rückgabe: [{ kg, reps }] (aufsteigend). */
+function computeWarmup(targetKg, ex) {
+  const out = [];
+  targetKg = +targetKg;
+  if (!(targetKg > 0)) return out;
+  const isBar = ex && (ex.eq === 'Langhantel' || ex.eq === 'SZ-Stange' || ex.eq === 'Multipresse');
+  const barKg = (ex && ex.eq === 'SZ-Stange') ? 10 : 20;
+  const round = kg => Math.round(kg / 2.5) * 2.5;
+  const push = (kg, reps) => {
+    if (kg <= 0 || kg >= targetKg) return;                 // nicht auf/über Arbeitsgewicht
+    if (out.length && kg <= out[out.length - 1].kg) return; // streng aufsteigend
+    out.push({ kg, reps });
+  };
+  if (isBar && targetKg >= barKg * 2) out.push({ kg: barKg, reps: 12 }); // leere Stange
+  const rampe = targetKg < 40 ? [[0.5, 8], [0.75, 5]] : [[0.5, 8], [0.7, 5], [0.85, 3]];
+  for (const [pct, reps] of rampe) {
+    let w = round(targetKg * pct);
+    if (isBar) w = Math.max(w, barKg);
+    push(w, reps);
+  }
+  if (targetKg >= 60) push(round(targetKg * 0.92), 1);     // schwerer Einzelsatz vor der Arbeit
+  return out;
+}
+function warmupPreviewHtml(exId, targetKg) {
+  const sets = computeWarmup(targetKg, exById(exId));
+  if (!sets.length) return '<div class="chart-leer">Gib dein Arbeitsgewicht ein</div>';
+  return '<div class="wu-list">' + sets.map((s, i) =>
+    '<div class="hist-set"><span class="hs-n">A' + (i + 1) + '</span>' +
+    '<span class="hs-main">' + fmtKg(s.kg) + ' kg × ' + s.reps + '</span></div>').join('') +
+    '<div class="hist-set" style="border-top:1px solid var(--sep);margin-top:4px;padding-top:6px"><span class="hs-n">→</span>' +
+    '<span class="hs-main">' + fmtKg(targetKg) + ' kg (Arbeitsgewicht)</span></div></div>';
+}
+
 /* ---------- Progressionsvorschlag ---------- */
 function repRangeText(repMin, repMax) {
   return (repMin === repMax) ? (repMin + ' Wdh.') : (repMin + '–' + repMax + ' Wdh.');
@@ -511,7 +547,10 @@ function setInfoLine(s) {
    Migriert die alte Form { sets:N, repMin, repMax } idempotent. */
 function normalizeTplExercise(it) {
   if (Array.isArray(it.sets)) {
-    it.sets = it.sets.map(s => ({ reps: (s && s.reps > 0) ? Math.round(s.reps) : null }));
+    it.sets = it.sets.map(s => {
+      if (s && s.warmup) return { warmup: true, kg: (s.kg > 0 ? Math.round(s.kg * 100) / 100 : 0), reps: (s.reps > 0 ? Math.round(s.reps) : null) };
+      return { reps: (s && s.reps > 0) ? Math.round(s.reps) : null };
+    });
   } else {
     const n = Math.max(1, Math.min(20, parseInt(it.sets, 10) || 3));
     const ziel = it.repMax || it.repMin || null;
@@ -531,9 +570,14 @@ function buildWoExercise(exId, tplSets, restSec) {
     : Array.from({ length: tplSets || 3 }, () => ({ reps: null }));
   const last = lastSessionFor(exId);
   const lastWs = last ? workingSets(last.wex) : [];
-  const repWerte = ziele.map(z => z.reps).filter(r => r != null);
-  const sets = ziele.map((z, i) => {
-    const ref = lastWs[i] || lastWs[lastWs.length - 1] || null;
+  const repWerte = ziele.filter(z => !z.warmup).map(z => z.reps).filter(r => r != null);
+  let wi = 0; // Zeiger auf die Arbeitssätze der letzten Einheit (Aufwärmsätze überspringen)
+  const sets = ziele.map(z => {
+    if (z.warmup) {
+      return { kg: z.kg != null ? z.kg : null, reps: z.reps != null ? z.reps : null, rpe: null, warmup: true, done: false, doneAt: null, restSec: null };
+    }
+    const ref = lastWs[wi] || lastWs[lastWs.length - 1] || null;
+    wi++;
     return {
       kg: ref ? ref.kg : null,
       reps: z.reps != null ? z.reps : (ref ? ref.reps : null),
@@ -707,9 +751,19 @@ function renderTplEditor() {
       '<button class="icon-btn" data-action="tpl-ex-down" data-i="' + i + '">↓</button>' +
       '<button class="icon-btn" style="background:var(--red-soft);color:var(--red)" data-action="tpl-ex-del" data-i="' + i + '">×</button>' +
       '</div></div>';
+    let satzN = 0;
     it.sets.forEach((st, j) => {
       const dij = ' data-i="' + i + '" data-j="' + j + '"';
-      h += '<div class="tpl-set-row"><span class="tpl-set-n">Satz ' + (j + 1) + '</span>' +
+      if (st.warmup) {
+        h += '<div class="tpl-set-row tpl-set-warm"><span class="tpl-set-n">Aufw.</span>' +
+          '<input class="num-input tpl-set-reps" inputmode="decimal" autocomplete="off" placeholder="kg" value="' + (st.kg != null ? fmtInput(st.kg) : '') + '" data-trole="wkg"' + dij + '>' +
+          '<span class="tpl-set-unit">kg ×</span>' +
+          '<input class="num-input tpl-set-reps" inputmode="numeric" autocomplete="off" placeholder="Wdh" value="' + (st.reps != null ? st.reps : '') + '" data-trole="reps"' + dij + '>' +
+          '<button class="del-btn" style="width:34px;height:34px;margin-left:auto" data-action="tpl-set-del"' + dij + '>×</button></div>';
+        return;
+      }
+      satzN++;
+      h += '<div class="tpl-set-row"><span class="tpl-set-n">Satz ' + satzN + '</span>' +
         '<button class="step-btn" data-action="tpl-set-step" data-dir="-1"' + dij + '>−</button>' +
         '<input class="num-input tpl-set-reps" inputmode="numeric" autocomplete="off" placeholder="Wdh" value="' + (st.reps != null ? st.reps : '') + '" data-trole="reps"' + dij + '>' +
         '<button class="step-btn" data-action="tpl-set-step" data-dir="1"' + dij + '>+</button>' +
@@ -718,6 +772,7 @@ function renderTplEditor() {
     });
     h += '<div class="tpl-ex-foot">' +
       '<button class="add-set-btn" style="padding:8px 2px" data-action="tpl-set-add" data-i="' + i + '">+ Satz</button>' +
+      '<button class="add-set-btn tpl-warmup-btn" style="padding:8px 2px" data-action="tpl-warmup" data-i="' + i + '">Aufwärmen berechnen</button>' +
       '<div class="tpl-rest"><span>Pause</span>' +
       '<input class="num-input tpl-rest-input" inputmode="numeric" placeholder="auto" value="' + (it.restSec || '') + '" data-trole="rest" data-i="' + i + '"><span>s</span></div>' +
       '</div></div>';
@@ -1248,8 +1303,8 @@ const ACTIONS = {
   'tpl-ex-del': el => { tplDraft.exercises.splice(+el.dataset.i, 1); render(); },
   'tpl-set-add': el => {
     const it = tplDraft.exercises[+el.dataset.i];
-    const letzter = it.sets[it.sets.length - 1];
-    it.sets.push({ reps: letzter ? letzter.reps : 10 });
+    const letzterArbeit = [...it.sets].reverse().find(s => !s.warmup);
+    it.sets.push({ reps: letzterArbeit ? letzterArbeit.reps : 10 });
     render();
   },
   'tpl-set-del': el => {
@@ -1267,6 +1322,32 @@ const ACTIONS = {
     const inp = el.parentElement.querySelector('input');
     if (inp) inp.value = v;
     /* nicht neu rendern → Tastatur/Fokus bleibt; Wert ist im State */
+  },
+  'tpl-warmup': el => {
+    const i = +el.dataset.i;
+    const it = tplDraft.exercises[i];
+    const ex = exById(it.exId);
+    /* Vorschlag fürs Arbeitsgewicht: letzter Top-Satz dieser Übung, sonst leer */
+    const last = lastSessionFor(it.exId);
+    const top = last ? topSet(workingSets(last.wex)) : null;
+    const vorschlag = top && top.kg > 0 ? fmtInput(top.kg) : '';
+    openSheet('<div class="sheet-title">Aufwärmsätze berechnen</div>' +
+      '<div class="sheet-sub">für <b>' + esc(ex.name) + '</b> — nur diese Übung. Gib dein heutiges Arbeitsgewicht ein.</div>' +
+      '<div class="form-row"><label>Arbeitsgewicht (kg)</label>' +
+      '<input class="input" id="wu-kg" inputmode="decimal" placeholder="z. B. 100" value="' + vorschlag + '" data-ex="' + esc(it.exId) + '"></div>' +
+      '<div id="wu-preview">' + warmupPreviewHtml(it.exId, parseNum(vorschlag)) + '</div>' +
+      '<div class="sheet-actions"><button class="btn btn-primary" data-action="wu-apply" data-i="' + i + '">Als Aufwärmsätze übernehmen</button></div>');
+  },
+  'wu-apply': el => {
+    const it = tplDraft.exercises[+el.dataset.i];
+    const target = parseNum($('#wu-kg').value);
+    if (!(target > 0)) { showToast('Bitte ein Arbeitsgewicht eingeben'); return; }
+    const warm = computeWarmup(target, exById(it.exId)).map(s => ({ warmup: true, kg: s.kg, reps: s.reps }));
+    if (!warm.length) { showToast('Kein Aufwärmen nötig — Gewicht zu leicht'); return; }
+    it.sets = warm.concat(it.sets.filter(s => !s.warmup)); // vorhandene Aufwärmsätze ersetzen
+    closeSheet();
+    render();
+    showToast(warm.length + ' Aufwärmsätze eingefügt');
   },
   'tpl-save': () => {
     if (!tplDraft.name.trim()) { showToast('Bitte einen Namen eingeben'); return; }
@@ -1677,7 +1758,15 @@ document.addEventListener('input', e => {
       it.restSec = (v != null && v > 0) ? Math.round(v) : null;
     } else if (el.dataset.trole === 'reps') {
       it.sets[+el.dataset.j].reps = (v != null && v > 0) ? Math.round(v) : null;
+    } else if (el.dataset.trole === 'wkg') {
+      it.sets[+el.dataset.j].kg = (v != null && v >= 0) ? v : null;
     }
+    return;
+  }
+  /* Aufwärm-Rechner: Live-Vorschau aktualisieren */
+  if (el.id === 'wu-kg') {
+    const prev = document.getElementById('wu-preview');
+    if (prev) prev.innerHTML = warmupPreviewHtml(el.dataset.ex, parseNum(el.value));
     return;
   }
   /* Übungen-Suche & Picker-Suche (nur Liste neu rendern, Fokus behalten) */

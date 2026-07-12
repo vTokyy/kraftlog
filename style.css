@@ -400,8 +400,12 @@ circle.chart-dot { stroke: var(--card); stroke-width: 1.5; }
 .tpl-set-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--sep); }
 .tpl-set-n { width: 52px; font-size: 14px; font-weight: 650; color: var(--text-2); flex-shrink: 0; }
 .tpl-set-reps { max-width: 68px; }
-.tpl-set-unit { font-size: 14px; color: var(--text-2); }
-.tpl-ex-foot { display: flex; align-items: center; gap: 10px; margin-top: 6px; border-top: 1px solid var(--sep); padding-top: 4px; }
+.tpl-set-unit { font-size: 14px; color: var(--text-2); flex-shrink: 0; }
+.tpl-set-warm .tpl-set-n { color: var(--orange); }
+.tpl-set-warm .num-input { background: var(--orange-soft); }
+.tpl-ex-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 6px; border-top: 1px solid var(--sep); padding-top: 4px; }
+.tpl-warmup-btn { color: var(--orange) !important; }
+.wu-list { background: var(--card-2); border-radius: 12px; padding: 8px 14px; margin-bottom: 4px; }
 .tpl-rest { display: flex; align-items: center; gap: 6px; margin-left: auto; font-size: 14px; color: var(--text-2); }
 .tpl-rest-input { width: 66px; max-width: 66px; }
 .icon-btn { width: 36px; height: 36px; border-radius: 9px; background: var(--card-2); color: var(--text-2); font-size: 15px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
