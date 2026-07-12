@@ -393,9 +393,17 @@ circle.chart-dot { stroke: var(--card); stroke-width: 1.5; }
 .del-btn { width: 40px; height: 40px; border-radius: 10px; background: var(--red-soft); color: var(--red); font-size: 16px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
 
 /* Vorlagen-Editor */
-.tpl-ex-row { display: flex; align-items: center; gap: 8px; background: var(--card); border-radius: 12px; box-shadow: var(--shadow); padding: 10px 12px; margin-bottom: 8px; }
-.tpl-ex-row .li-main { flex: 1; min-width: 0; }
-.tpl-mini { width: 46px; min-height: 40px; border: none; border-radius: 9px; background: var(--card-2); text-align: center; font-size: 16px; font-weight: 650; }
+.tpl-ex-card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 12px 14px; margin-bottom: 12px; }
+.tpl-ex-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.tpl-ex-name { flex: 1; min-width: 0; font-size: 16px; font-weight: 700; letter-spacing: -0.2px; }
+.tpl-ex-tools { display: flex; gap: 6px; flex-shrink: 0; }
+.tpl-set-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--sep); }
+.tpl-set-n { width: 52px; font-size: 14px; font-weight: 650; color: var(--text-2); flex-shrink: 0; }
+.tpl-set-reps { max-width: 68px; }
+.tpl-set-unit { font-size: 14px; color: var(--text-2); }
+.tpl-ex-foot { display: flex; align-items: center; gap: 10px; margin-top: 6px; border-top: 1px solid var(--sep); padding-top: 4px; }
+.tpl-rest { display: flex; align-items: center; gap: 6px; margin-left: auto; font-size: 14px; color: var(--text-2); }
+.tpl-rest-input { width: 66px; max-width: 66px; }
 .icon-btn { width: 36px; height: 36px; border-radius: 9px; background: var(--card-2); color: var(--text-2); font-size: 15px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 
 @media (min-width: 561px) {

@@ -3,7 +3,7 @@
  *   settings:        { theme, sound, vibration, restCompound, restIsolation, incUpper, incLower, lastExport }
  *   customExercises: [ { id:'cu-…', name, mg, eq, compound } ]
  *   exerciseSettings:{ exId: { restSec, notiz } }
- *   templates:       [ { id, name, createdAt, exercises:[{exId, sets, repMin, repMax, restSec}] } ]
+ *   templates:       [ { id, name, createdAt, exercises:[{exId, restSec, sets:[{reps}]}] } ]  // reps = exaktes Ziel je Satz
  *   workouts:        [ { id, templateId, name, startedAt, finishedAt, notiz,
  *                        exercises:[{exId, repMin, repMax, sets:[{kg, reps, rpe, warmup, doneAt, restSec}]}] } ]
  *   activeWorkout:   wie workout, Sätze zusätzlich mit done:true/false; rest = laufende Pause
@@ -66,6 +66,9 @@ function sanitizeState(s) {
   if (!s.settings || typeof s.settings !== 'object') s.settings = d.settings;
   s.workouts = s.workouts.filter(w => w && Array.isArray(w.exercises) && typeof w.startedAt === 'number');
   s.templates = s.templates.filter(t => t && Array.isArray(t.exercises));
+  s.templates.forEach(t => {
+    t.exercises = t.exercises.filter(it => it && it.exId).map(normalizeTplExercise);
+  });
   s.customExercises = s.customExercises.filter(e => e && e.id && e.name);
   s.bodyweight = s.bodyweight.filter(b => b && b.date && b.kg > 0);
   s.runs = s.runs.filter(r => r && r.distanzKm > 0 && r.dauerSec > 0 && typeof r.startedAt === 'number');
@@ -258,6 +261,9 @@ function allPrEvents() {
 }
 
 /* ---------- Progressionsvorschlag ---------- */
+function repRangeText(repMin, repMax) {
+  return (repMin === repMax) ? (repMin + ' Wdh.') : (repMin + '–' + repMax + ' Wdh.');
+}
 function progressionFor(exId, repMin, repMax) {
   repMin = repMin || 8;
   repMax = repMax || 12;
@@ -269,7 +275,7 @@ function progressionFor(exId, repMin, repMax) {
   const inc = (ex.compound && (ex.mg === 'Beine' || ex.mg === 'Gesäß')) ? S.settings.incLower : S.settings.incUpper;
   const topKg = Math.max(...ws.map(s => s.kg || 0));
   if (ws.every(s => s.reps >= repMax)) {
-    return { typ: 'plus', kg: topKg + inc, text: '+' + fmtKg(inc) + ' kg → ' + fmtKg(topKg + inc) + ' kg (' + repMin + '–' + repMax + ' Wdh.)' };
+    return { typ: 'plus', kg: topKg + inc, text: '+' + fmtKg(inc) + ' kg → ' + fmtKg(topKg + inc) + ' kg (' + repRangeText(repMin, repMax) + ')' };
   }
   if (ws.some(s => s.reps < repMin)) {
     const prev = sess[sess.length - 2];
@@ -278,7 +284,7 @@ function progressionFor(exId, repMin, repMax) {
       const deload = Math.max(0, Math.round(topKg * 0.95 / 2.5) * 2.5);
       return { typ: 'halten', kg: deload, text: 'Deload erwägen: −5 % ≈ ' + fmtKg(deload) + ' kg' };
     }
-    return { typ: 'halten', kg: topKg, text: 'Gewicht halten: ' + fmtKg(topKg) + ' kg (' + repMin + '–' + repMax + ' Wdh.)' };
+    return { typ: 'halten', kg: topKg, text: 'Gewicht halten: ' + fmtKg(topKg) + ' kg (' + repRangeText(repMin, repMax) + ')' };
   }
   return { typ: 'wdh', kg: topKg, text: fmtKg(topKg) + ' kg halten, +1 Wdh. anpeilen' };
 }
@@ -501,24 +507,52 @@ function setInfoLine(s) {
   return bits.length ? '<div class="pause-info">' + bits.join(' · ') + '</div>' : '';
 }
 
+/* Template-Übung in einheitliche Form bringen: sets = Liste von { reps } (exaktes Ziel je Satz).
+   Migriert die alte Form { sets:N, repMin, repMax } idempotent. */
+function normalizeTplExercise(it) {
+  if (Array.isArray(it.sets)) {
+    it.sets = it.sets.map(s => ({ reps: (s && s.reps > 0) ? Math.round(s.reps) : null }));
+  } else {
+    const n = Math.max(1, Math.min(20, parseInt(it.sets, 10) || 3));
+    const ziel = it.repMax || it.repMin || null;
+    it.sets = Array.from({ length: n }, () => ({ reps: ziel ? Math.round(ziel) : null }));
+  }
+  if (!it.sets.length) it.sets = [{ reps: null }];
+  it.restSec = (it.restSec > 0) ? Math.round(it.restSec) : null;
+  delete it.repMin; delete it.repMax;
+  return it;
+}
+
 /* --- Workout-State-Machine --- */
-function buildWoExercise(exId, nSets, repMin, repMax, restSec) {
-  nSets = nSets || 3;
+/* tplSets: Liste von { reps } (aus Vorlage) ODER eine Zahl (freies Training / Übung nachträglich). */
+function buildWoExercise(exId, tplSets, restSec) {
+  const ziele = Array.isArray(tplSets)
+    ? tplSets
+    : Array.from({ length: tplSets || 3 }, () => ({ reps: null }));
   const last = lastSessionFor(exId);
   const lastWs = last ? workingSets(last.wex) : [];
-  const sets = [];
-  for (let i = 0; i < nSets; i++) {
+  const repWerte = ziele.map(z => z.reps).filter(r => r != null);
+  const sets = ziele.map((z, i) => {
     const ref = lastWs[i] || lastWs[lastWs.length - 1] || null;
-    sets.push({ kg: ref ? ref.kg : null, reps: ref ? ref.reps : null, rpe: null, warmup: false, done: false, doneAt: null, restSec: null });
-  }
-  return { exId, repMin: repMin || null, repMax: repMax || null, restSec: restSec || null, sets };
+    return {
+      kg: ref ? ref.kg : null,
+      reps: z.reps != null ? z.reps : (ref ? ref.reps : null),
+      rpe: null, warmup: false, done: false, doneAt: null, restSec: null
+    };
+  });
+  return {
+    exId,
+    repMin: repWerte.length ? Math.min(...repWerte) : null,
+    repMax: repWerte.length ? Math.max(...repWerte) : null,
+    restSec: restSec || null, sets
+  };
 }
 function startWorkout(tplId) {
   if (S.activeWorkout) { showToast('Es läuft bereits ein Training'); return; }
   const tpl = tplId ? S.templates.find(t => t.id === tplId) : null;
   const now = Date.now();
   const aw = { id: 'w-' + now, templateId: tpl ? tpl.id : null, name: tpl ? tpl.name : 'Freies Training', startedAt: now, notiz: '', exercises: [], rest: null };
-  if (tpl) tpl.exercises.forEach(it => aw.exercises.push(buildWoExercise(it.exId, it.sets, it.repMin, it.repMax, it.restSec)));
+  if (tpl) tpl.exercises.forEach(it => aw.exercises.push(buildWoExercise(it.exId, it.sets, it.restSec)));
   S.activeWorkout = aw;
   trainSub = null;
   tab = 'start';
@@ -666,16 +700,27 @@ function renderTplEditor() {
   if (!d.exercises.length) h += '<div class="card"><div class="li-sub" style="white-space:normal">Noch keine Übungen im Plan.</div></div>';
   d.exercises.forEach((it, i) => {
     const ex = exById(it.exId);
-    h += '<div class="tpl-ex-row"><div class="li-main"><div class="li-title" style="font-size:15px">' + esc(ex.name) + '</div>' +
-      '<div class="li-sub" style="display:flex;gap:5px;align-items:center;white-space:normal;flex-wrap:wrap;margin-top:4px">' +
-      '<input class="tpl-mini" inputmode="numeric" value="' + it.sets + '" data-tex="sets" data-i="' + i + '"> Sätze · ' +
-      '<input class="tpl-mini" inputmode="numeric" value="' + it.repMin + '" data-tex="repMin" data-i="' + i + '">–' +
-      '<input class="tpl-mini" inputmode="numeric" value="' + it.repMax + '" data-tex="repMax" data-i="' + i + '"> Wdh. · ' +
-      '<input class="tpl-mini" style="width:58px" inputmode="numeric" placeholder="auto" value="' + (it.restSec || '') + '" data-tex="restSec" data-i="' + i + '"> s Pause' +
-      '</div></div>' +
+    h += '<div class="tpl-ex-card"><div class="tpl-ex-head">' +
+      '<div class="tpl-ex-name">' + esc(ex.name) + '</div>' +
+      '<div class="tpl-ex-tools">' +
       '<button class="icon-btn" data-action="tpl-ex-up" data-i="' + i + '">↑</button>' +
       '<button class="icon-btn" data-action="tpl-ex-down" data-i="' + i + '">↓</button>' +
-      '<button class="icon-btn" style="background:var(--red-soft);color:var(--red)" data-action="tpl-ex-del" data-i="' + i + '">×</button></div>';
+      '<button class="icon-btn" style="background:var(--red-soft);color:var(--red)" data-action="tpl-ex-del" data-i="' + i + '">×</button>' +
+      '</div></div>';
+    it.sets.forEach((st, j) => {
+      const dij = ' data-i="' + i + '" data-j="' + j + '"';
+      h += '<div class="tpl-set-row"><span class="tpl-set-n">Satz ' + (j + 1) + '</span>' +
+        '<button class="step-btn" data-action="tpl-set-step" data-dir="-1"' + dij + '>−</button>' +
+        '<input class="num-input tpl-set-reps" inputmode="numeric" autocomplete="off" placeholder="Wdh" value="' + (st.reps != null ? st.reps : '') + '" data-trole="reps"' + dij + '>' +
+        '<button class="step-btn" data-action="tpl-set-step" data-dir="1"' + dij + '>+</button>' +
+        '<span class="tpl-set-unit">Wdh.</span>' +
+        '<button class="del-btn" style="width:34px;height:34px;margin-left:auto" data-action="tpl-set-del"' + dij + '>×</button></div>';
+    });
+    h += '<div class="tpl-ex-foot">' +
+      '<button class="add-set-btn" style="padding:8px 2px" data-action="tpl-set-add" data-i="' + i + '">+ Satz</button>' +
+      '<div class="tpl-rest"><span>Pause</span>' +
+      '<input class="num-input tpl-rest-input" inputmode="numeric" placeholder="auto" value="' + (it.restSec || '') + '" data-trole="rest" data-i="' + i + '"><span>s</span></div>' +
+      '</div></div>';
   });
   h += '<button class="btn btn-block btn-soft" data-action="tpl-add-ex">+ Übung hinzufügen</button>' +
     '<div class="row-2" style="margin-top:16px"><button class="btn btn-primary" data-action="tpl-save">Speichern</button>' +
@@ -1195,12 +1240,34 @@ const ACTIONS = {
     render();
   },
   'tpl-add-ex': () => openExercisePicker(id => {
-    tplDraft.exercises.push({ exId: id, sets: 3, repMin: 8, repMax: 12, restSec: null });
+    tplDraft.exercises.push({ exId: id, restSec: null, sets: [{ reps: 10 }, { reps: 10 }, { reps: 10 }] });
     render();
   }),
   'tpl-ex-up': el => { const i = +el.dataset.i; if (i > 0) { const a = tplDraft.exercises; [a[i - 1], a[i]] = [a[i], a[i - 1]]; render(); } },
   'tpl-ex-down': el => { const i = +el.dataset.i; const a = tplDraft.exercises; if (i < a.length - 1) { [a[i + 1], a[i]] = [a[i], a[i + 1]]; render(); } },
   'tpl-ex-del': el => { tplDraft.exercises.splice(+el.dataset.i, 1); render(); },
+  'tpl-set-add': el => {
+    const it = tplDraft.exercises[+el.dataset.i];
+    const letzter = it.sets[it.sets.length - 1];
+    it.sets.push({ reps: letzter ? letzter.reps : 10 });
+    render();
+  },
+  'tpl-set-del': el => {
+    const it = tplDraft.exercises[+el.dataset.i];
+    it.sets.splice(+el.dataset.j, 1);
+    if (!it.sets.length) tplDraft.exercises.splice(+el.dataset.i, 1); // letzter Satz weg → Übung raus
+    render();
+  },
+  'tpl-set-step': el => {
+    const it = tplDraft.exercises[+el.dataset.i];
+    const st = it.sets[+el.dataset.j];
+    let v = (st.reps != null ? st.reps : 0) + (+el.dataset.dir);
+    if (v < 1) v = 1;
+    st.reps = v;
+    const inp = el.parentElement.querySelector('input');
+    if (inp) inp.value = v;
+    /* nicht neu rendern → Tastatur/Fokus bleibt; Wert ist im State */
+  },
   'tpl-save': () => {
     if (!tplDraft.name.trim()) { showToast('Bitte einen Namen eingeben'); return; }
     if (!tplDraft.exercises.length) { showToast('Bitte mindestens eine Übung hinzufügen'); return; }
@@ -1243,7 +1310,7 @@ const ACTIONS = {
   },
   'wo-add-ex': () => {
     openExercisePicker(id => {
-      S.activeWorkout.exercises.push(buildWoExercise(id, 3, null, null, null));
+      S.activeWorkout.exercises.push(buildWoExercise(id, 3, null));
       save();
       render();
     });
@@ -1603,11 +1670,14 @@ document.addEventListener('input', e => {
   }
   /* Vorlagen-Editor */
   if (el.dataset.tinput) { tplDraft[el.dataset.tinput] = el.value; return; }
-  if (el.dataset.tex) {
+  if (el.dataset.trole) {
     const it = tplDraft.exercises[+el.dataset.i];
     const v = parseNum(el.value);
-    if (el.dataset.tex === 'restSec') it.restSec = v && v > 0 ? Math.round(v) : null;
-    else if (v != null && v > 0) it[el.dataset.tex] = Math.round(v);
+    if (el.dataset.trole === 'rest') {
+      it.restSec = (v != null && v > 0) ? Math.round(v) : null;
+    } else if (el.dataset.trole === 'reps') {
+      it.sets[+el.dataset.j].reps = (v != null && v > 0) ? Math.round(v) : null;
+    }
     return;
   }
   /* Übungen-Suche & Picker-Suche (nur Liste neu rendern, Fokus behalten) */
