@@ -140,6 +140,20 @@ svg { display: block; }
 .li-sub { font-size: 13px; color: var(--text-2); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .li-side { font-size: 13px; color: var(--text-2); text-align: right; flex-shrink: 0; }
 .chev { color: var(--text-2); font-size: 15px; flex-shrink: 0; }
+
+/* ---------- Übungs-Kacheln (Icons) ---------- */
+.ex-thumb {
+  width: 38px; height: 38px; border-radius: 10px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.ex-thumb svg {
+  width: 24px; height: 24px; fill: none; stroke: currentColor;
+  stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+}
+.ex-thumb-lg { width: 54px; height: 54px; border-radius: 14px; }
+.ex-thumb-lg svg { width: 34px; height: 34px; }
+.detail-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.detail-head .view-title small { margin-top: 4px; }
 .month-hd { font-size: 15px; font-weight: 700; color: var(--text-2); margin: 18px 0 8px 4px; }
 
 /* ---------- Buttons ---------- */
@@ -197,7 +211,7 @@ svg { display: block; }
 .wo-header h2 { font-size: 22px; font-weight: 800; letter-spacing: -0.4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wo-elapsed { font-size: 13px; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .ex-card { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 12px 10px; margin-bottom: 14px; }
-.ex-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; }
+.ex-head { display: flex; align-items: center; gap: 9px; margin-bottom: 2px; }
 .ex-title { font-size: 17px; font-weight: 700; flex: 1; }
 .ex-hint { font-size: 12.5px; color: var(--orange); margin: 2px 0 4px; }
 .lastmal { font-size: 13px; color: var(--text-2); margin: 4px 0 8px; line-height: 1.45; }

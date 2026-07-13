@@ -23,6 +23,7 @@ const MGS = window.KRAFTLOG_MUSKELGRUPPEN || [];
 const EQS = window.KRAFTLOG_EQUIPMENT || [];
 const Charts = window.KraftlogCharts;
 const Signal = window.KraftlogTimer;
+const Icons = window.KraftlogIcons;
 const RPE_WERTE = ['6', '6.5', '7', '7.5', '8', '8.5', '9', '9.5', '10'];
 const TAG_MS = 86400000;
 
@@ -487,7 +488,7 @@ function renderActiveWorkout() {
 }
 function renderExCard(wex, xi) {
   const ex = exById(wex.exId);
-  let h = '<div class="ex-card"><div class="ex-head"><div class="ex-title">' + esc(ex.name) + '</div><span class="tag">' + esc(ex.mg) + '</span></div>';
+  let h = '<div class="ex-card"><div class="ex-head">' + Icons.thumb(ex) + '<div class="ex-title">' + esc(ex.name) + '</div><span class="tag">' + esc(ex.mg) + '</span></div>';
   if (ex.hint) h += '<div class="ex-hint">' + esc(ex.hint) + '</div>';
   const last = lastSessionFor(wex.exId);
   if (last) {
@@ -748,6 +749,7 @@ function renderTplEditor() {
   d.exercises.forEach((it, i) => {
     const ex = exById(it.exId);
     h += '<div class="tpl-ex-card"><div class="tpl-ex-head">' +
+      Icons.thumb(ex) +
       '<div class="tpl-ex-name">' + esc(ex.name) + '</div>' +
       '<div class="tpl-ex-tools">' +
       '<button class="icon-btn" data-action="tpl-ex-up" data-i="' + i + '">↑</button>' +
@@ -797,6 +799,7 @@ function pickerListHtml(q) {
     h += '<div class="section-title">' + esc(mg) + '</div>';
     for (const e of items) {
       h += '<button class="li-item" style="min-height:48px;padding:9px 14px" data-action="pick-ex" data-id="' + esc(e.id) + '">' +
+        Icons.thumb(e) +
         '<div class="li-main"><div class="li-title" style="font-size:15px">' + esc(e.name) + '</div></div>' +
         '<span class="tag">' + esc(e.eq) + '</span></button>';
     }
@@ -1004,6 +1007,7 @@ function uebListHtml() {
         if (top) side = fmtKg(top.kg) + ' × ' + top.reps;
       }
       h += '<button class="li-item" data-action="ueb-open" data-id="' + esc(e.id) + '">' +
+        Icons.thumb(e) +
         '<div class="li-main"><div class="li-title" style="font-size:15px">' + esc(e.name) +
         (e.id.indexOf('cu-') === 0 ? ' <span class="tag">eigene</span>' : '') + '</div>' +
         '<div class="li-sub"><span class="tag">' + esc(e.eq) + '</span>' + (e.compound ? '<span class="tag">Grundübung</span>' : '') + '</div></div>' +
@@ -1018,9 +1022,10 @@ function renderUebungDetail() {
   const bests = prBests(ex.id);
   const os = S.exerciseSettings[ex.id] || {};
   let h = '<button class="back-btn" data-action="ueb-back">‹ Übungen</button>' +
-    '<h1 class="view-title" style="font-size:24px">' + esc(ex.name) +
+    '<div class="detail-head">' + Icons.thumb(ex, true) +
+    '<h1 class="view-title" style="font-size:24px;margin:0">' + esc(ex.name) +
     '<small><span class="tag">' + esc(ex.mg) + '</span><span class="tag">' + esc(ex.eq) + '</span>' +
-    (ex.compound ? '<span class="tag">Grundübung</span>' : '') + '</small></h1>';
+    (ex.compound ? '<span class="tag">Grundübung</span>' : '') + '</small></h1></div>';
   if (ex.hint) h += '<div class="ex-hint" style="margin-bottom:10px">' + esc(ex.hint) + '</div>';
   h += '<div class="stat-grid stat-grid-3">' +
     '<div class="stat-tile"><div class="stat-val">' + (bests.maxKg != null ? fmtKg(bests.maxKg) : '–') + '</div><div class="stat-lab">Max. kg' + (ex.bw ? ' (Zusatz)' : '') + '</div></div>' +

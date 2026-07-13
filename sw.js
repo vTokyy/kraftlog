@@ -4,13 +4,14 @@
  * VERSION wird von build.py (--bump) synchron zu den ?v=N-Einbindungen gehalten:
  * neue Version → neuer Cache → alte Caches werden beim Aktivieren gelöscht.
  */
-const VERSION = '6';
+const VERSION = '7';
 const CACHE = 'kraftlog-v' + VERSION;
 const DATEIEN = [
   './',
   './index.html',
   './style.css?v=' + VERSION,
   './exercises.js?v=' + VERSION,
+  './icons.js?v=' + VERSION,
   './charts.js?v=' + VERSION,
   './timer.js?v=' + VERSION,
   './app.js?v=' + VERSION,

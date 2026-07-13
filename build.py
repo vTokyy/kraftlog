@@ -79,7 +79,7 @@ def build_artifact():
 
     html = re.sub(r'<script src="([^"?]+)[^"]*"></script>', inline_script, html)
 
-    if n_css != 1 or n_js != 4:
+    if n_css != 1 or n_js != 5:
         sys.exit(f'FEHLER: Unerwartete Ersetzungen (css={n_css}, js={n_js}) — index.html pruefen.')
 
     # Sanity-Checks: keine lokalen Referenzen, keine externen URLs
