@@ -1843,6 +1843,16 @@ document.addEventListener('change', e => {
   }
 });
 
+/* Beim Antippen eines Zahlenfelds den ganzen Wert markieren → direkt überschreiben, ohne erst zu löschen */
+document.addEventListener('focusin', e => {
+  const el = e.target;
+  if (el.tagName !== 'INPUT' || !el.value) return;
+  if (!el.hasAttribute('inputmode') && el.id !== 'run-dauer') return;   // nur Zahlen-/Zeitfelder, nicht Suche/Namen
+  const markiere = () => { try { el.select(); } catch (_) { } };
+  markiere();
+  setTimeout(markiere, 0);   // iOS: Auswahl nach dem Setzen des Cursors erneut erzwingen
+});
+
 /* ---------- Ticker & Start ---------- */
 function tick() {
   renderTimerBar();
