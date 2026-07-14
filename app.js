@@ -1192,7 +1192,8 @@ function renderDaten() {
     (st.lastExport ? '<br>Letzter Export: ' + fmtDatumLang(st.lastExport) : '<br>Noch kein Export gemacht.') + '</div>' +
     '<button class="btn btn-block btn-primary" data-action="export-json">Export als JSON-Datei</button>' +
     '<button class="btn btn-block" style="margin-top:10px" data-action="export-clip">Export in Zwischenablage</button>' +
-    '<button class="btn btn-block" style="margin-top:10px" data-action="import-open">Import…</button>';
+    '<button class="btn btn-block" style="margin-top:10px" data-action="import-open">Import…</button>' +
+    '<button class="btn btn-block" style="margin-top:10px" data-action="strong-open">Import aus Strong (CSV)…</button>';
   let backup = null;
   try { backup = localStorage.getItem(BACKUP_KEY); } catch (e) { }
   if (backup) h += '<button class="btn btn-block" style="margin-top:10px" data-action="backup-restore">Backup wiederherstellen</button>';
@@ -1270,6 +1271,263 @@ function tryImport(text) {
   applyTheme();
   render();
   showToast('Import erfolgreich — vorherige Daten als Backup gesichert');
+}
+
+/* ---------- Strong-Import (CSV) ----------
+ * Liest den CSV-Export der Strong-App (Profil → "Export Strong Data"),
+ * übersetzt Übungsnamen auf Kraftlog-Übungen und importiert Workouts + Läufe.
+ * Unbekannte Übungen werden automatisch als eigene Übungen angelegt.
+ */
+const STRONG_MAP = {
+  'bench press (barbell)': 'bankdruecken-lh', 'bench press': 'bankdruecken-lh',
+  'incline bench press (barbell)': 'schraegbank-lh', 'incline bench press': 'schraegbank-lh',
+  'bench press (dumbbell)': 'bankdruecken-kh',
+  'incline bench press (dumbbell)': 'schraegbank-kh',
+  'chest fly (dumbbell)': 'fliegende-kh', 'chest fly': 'fliegende-kh', 'fly (dumbbell)': 'fliegende-kh',
+  'cable crossover': 'cable-crossover', 'cable fly': 'cable-crossover', 'cable fly crossovers': 'cable-crossover',
+  'chest fly (machine)': 'butterfly', 'pec deck (machine)': 'butterfly', 'butterfly (machine)': 'butterfly',
+  'chest press (machine)': 'brustpresse',
+  'chest dip': 'dips', 'dip': 'dips', 'chest dip (assisted)': 'dips',
+  'push up': 'liegestuetze', 'push ups': 'liegestuetze',
+  'deadlift (barbell)': 'kreuzheben', 'deadlift': 'kreuzheben',
+  'sumo deadlift (barbell)': 'sumo-kreuzheben', 'sumo deadlift': 'sumo-kreuzheben',
+  'pull up': 'klimmzuege', 'pull up (weighted)': 'klimmzuege', 'chin up': 'klimmzuege', 'pull up (assisted)': 'klimmzuege',
+  'lat pulldown (cable)': 'latzug', 'lat pulldown (machine)': 'latzug', 'lat pulldown': 'latzug',
+  'lat pulldown - close grip (cable)': 'latzug-eng',
+  'bent over row (barbell)': 'lh-rudern', 'bent over row': 'lh-rudern', 'pendlay row (barbell)': 'lh-rudern',
+  'bent over one arm row (dumbbell)': 'kh-rudern', 'dumbbell row': 'kh-rudern',
+  'seated row (cable)': 'kabelrudern', 'seated cable row': 'kabelrudern',
+  't bar row': 'tbar-rudern',
+  'seated row (machine)': 'rudermaschine', 'row (machine)': 'rudermaschine',
+  'pullover (dumbbell)': 'ueberzuege',
+  'shrug (barbell)': 'shrugs', 'shrug (dumbbell)': 'shrugs', 'shrug': 'shrugs',
+  'overhead press (barbell)': 'schulterdruecken-lh', 'overhead press': 'schulterdruecken-lh',
+  'strict military press (barbell)': 'schulterdruecken-lh', 'push press': 'schulterdruecken-lh',
+  'overhead press (dumbbell)': 'schulterdruecken-kh', 'shoulder press (dumbbell)': 'schulterdruecken-kh',
+  'seated overhead press (dumbbell)': 'schulterdruecken-kh',
+  'shoulder press (machine)': 'schulterdruecken-masch',
+  'arnold press (dumbbell)': 'arnold-press',
+  'lateral raise (dumbbell)': 'seitheben', 'lateral raise': 'seitheben',
+  'lateral raise (cable)': 'seitheben-kabel',
+  'rear delt reverse fly (dumbbell)': 'vorgebeugtes-seitheben',
+  'rear delt reverse fly (machine)': 'reverse-butterfly', 'reverse fly (machine)': 'reverse-butterfly',
+  'face pull (cable)': 'face-pulls', 'face pull': 'face-pulls',
+  'front raise (dumbbell)': 'frontheben', 'front raise (barbell)': 'frontheben', 'front raise': 'frontheben',
+  'bicep curl (barbell)': 'lh-curls',
+  'ez bar curl': 'sz-curls', 'bicep curl (ez bar)': 'sz-curls',
+  'bicep curl (dumbbell)': 'kh-curls', 'bicep curl': 'kh-curls',
+  'hammer curl (dumbbell)': 'hammer-curls', 'hammer curl': 'hammer-curls',
+  'preacher curl (barbell)': 'scott-curls', 'preacher curl (dumbbell)': 'scott-curls', 'preacher curl (machine)': 'scott-curls', 'preacher curl': 'scott-curls',
+  'bicep curl (cable)': 'kabel-curls', 'cable curl': 'kabel-curls',
+  'concentration curl (dumbbell)': 'konzentrations-curls', 'concentration curl': 'konzentrations-curls',
+  'bench press - close grip (barbell)': 'enges-bankdruecken', 'close grip bench press': 'enges-bankdruecken',
+  'triceps pushdown (cable - straight bar)': 'trizeps-kabel', 'triceps pushdown': 'trizeps-kabel', 'triceps rope pushdown': 'trizeps-kabel',
+  'triceps extension (cable)': 'trizeps-overhead-kabel', 'overhead triceps extension (cable)': 'trizeps-overhead-kabel',
+  'skullcrusher (barbell)': 'french-press', 'skullcrusher (dumbbell)': 'french-press', 'skullcrusher': 'french-press', 'lying triceps extension': 'french-press',
+  'triceps extension (dumbbell)': 'trizeps-kh-overhead', 'seated triceps press': 'trizeps-kh-overhead', 'triceps extension': 'trizeps-kh-overhead',
+  'triceps kickback (dumbbell)': 'kickbacks', 'kickback': 'kickbacks',
+  'bench dip': 'bench-dips',
+  'squat (barbell)': 'kniebeugen', 'squat': 'kniebeugen',
+  'front squat (barbell)': 'frontkniebeugen', 'front squat': 'frontkniebeugen',
+  'squat (smith machine)': 'kniebeugen-multi',
+  'goblet squat (kettlebell)': 'goblet-squats', 'goblet squat (dumbbell)': 'goblet-squats', 'goblet squat': 'goblet-squats',
+  'leg press': 'beinpresse', 'leg press (machine)': 'beinpresse',
+  'hack squat': 'hackenschmidt', 'hack squat (machine)': 'hackenschmidt',
+  'lunge (dumbbell)': 'ausfallschritte', 'lunge (barbell)': 'ausfallschritte', 'lunge': 'ausfallschritte', 'walking lunge': 'ausfallschritte',
+  'bulgarian split squat': 'bulgarian-split', 'split squat (dumbbell)': 'bulgarian-split',
+  'romanian deadlift (barbell)': 'rumaenisches-kh', 'romanian deadlift (dumbbell)': 'rumaenisches-kh', 'romanian deadlift': 'rumaenisches-kh',
+  'stiff leg deadlift (barbell)': 'rumaenisches-kh',
+  'leg extension (machine)': 'beinstrecker', 'leg extension': 'beinstrecker',
+  'lying leg curl (machine)': 'beinbeuger-liegend', 'lying leg curl': 'beinbeuger-liegend',
+  'seated leg curl (machine)': 'beinbeuger-sitzend', 'seated leg curl': 'beinbeuger-sitzend',
+  'hip adductor (machine)': 'adduktion',
+  'hip thrust (barbell)': 'hip-thrusts', 'hip thrust': 'hip-thrusts',
+  'glute bridge': 'glute-bridge',
+  'glute kickback (machine)': 'glute-kickbacks', 'cable kickback': 'glute-kickbacks',
+  'hip abductor (machine)': 'abduktion',
+  'pull through (cable)': 'hueftstrecken-kabel',
+  'crunch': 'crunches', 'sit up': 'crunches',
+  'cable crunch': 'kabel-crunches',
+  'ab crunch machine': 'bauchmaschine', 'crunch (machine)': 'bauchmaschine',
+  'hanging leg raise': 'beinheben-haengend', 'hanging knee raise': 'beinheben-haengend',
+  'lying leg raise': 'beinheben-liegend', 'leg raise': 'beinheben-liegend',
+  'russian twist': 'russian-twists',
+  'plank': 'plank',
+  'standing calf raise (machine)': 'wadenheben-stehend', 'standing calf raise (barbell)': 'wadenheben-stehend', 'standing calf raise': 'wadenheben-stehend', 'calf raise': 'wadenheben-stehend',
+  'seated calf raise (machine)': 'wadenheben-sitzend', 'seated calf raise': 'wadenheben-sitzend',
+  'calf press on leg press': 'wadenheben-beinpresse', 'calf press (machine)': 'wadenheben-beinpresse', 'calf press': 'wadenheben-beinpresse',
+  'wrist curl (barbell)': 'handgelenk-curls', 'wrist curl (dumbbell)': 'handgelenk-curls', 'wrist curl': 'handgelenk-curls',
+  'reverse curl (barbell)': 'reverse-curls', 'reverse curl (ez bar)': 'reverse-curls', 'reverse curl': 'reverse-curls',
+  'farmers walk': 'farmers-walk', "farmer's walk": 'farmers-walk', 'farmers walk (dumbbell)': 'farmers-walk'
+};
+const STRONG_LAUF = ['running', 'running (treadmill)', 'treadmill', 'jogging', 'trail running'];
+
+/* Robuster CSV-Parser (Anführungszeichen, Kommas/Zeilenumbrüche in Feldern) */
+function parseCsv(text, delim) {
+  const rows = [];
+  let row = [], feld = '', inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQ) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { feld += '"'; i++; }
+        else inQ = false;
+      } else feld += c;
+    } else if (c === '"') {
+      inQ = true;
+    } else if (c === delim) {
+      row.push(feld); feld = '';
+    } else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(feld); feld = '';
+      if (row.length > 1 || row[0] !== '') rows.push(row);
+      row = [];
+    } else feld += c;
+  }
+  if (feld !== '' || row.length) { row.push(feld); rows.push(row); }
+  return rows;
+}
+
+function strongGuessMgEq(name) {
+  const n = name.toLowerCase();
+  let eq = 'Maschine';
+  if (n.includes('(barbell)')) eq = 'Langhantel';
+  else if (n.includes('(dumbbell)') || n.includes('(kettlebell)')) eq = 'Kurzhantel';
+  else if (n.includes('(cable')) eq = 'Kabelzug';
+  else if (n.includes('(smith')) eq = 'Multipresse';
+  else if (n.includes('(ez bar)')) eq = 'SZ-Stange';
+  else if (n.includes('(bodyweight)') || n.includes('(weighted)') || n.includes('(assisted)')) eq = 'Körpergewicht';
+  let mg = 'Rücken';
+  if (/curl/.test(n) && !/leg|wrist|reverse/.test(n)) mg = 'Bizeps';
+  else if (/tricep|skull|pushdown|extension/.test(n) && !/leg|back/.test(n)) mg = 'Trizeps';
+  else if (/bench|chest|fly|push up|dip/.test(n)) mg = 'Brust';
+  else if (/shoulder|overhead|lateral|delt|face pull|front raise|press/.test(n)) mg = 'Schultern';
+  else if (/calf/.test(n)) mg = 'Waden';
+  else if (/glute|hip thrust|bridge|abduct/.test(n)) mg = 'Gesäß';
+  else if (/squat|leg|lunge|adduct/.test(n)) mg = 'Beine';
+  else if (/crunch|plank|ab |twist|raise|sit up/.test(n)) mg = 'Bauch/Core';
+  else if (/wrist|forearm|farmer/.test(n)) mg = 'Unterarme';
+  return { mg, eq };
+}
+
+function parseStrongDauer(str) { // "1h 10m", "45m", "58s"
+  if (!str) return null;
+  let sec = 0;
+  const h = str.match(/(\d+)\s*h/); if (h) sec += (+h[1]) * 3600;
+  const m = str.match(/(\d+)\s*m/); if (m) sec += (+m[1]) * 60;
+  const s2 = str.match(/(\d+)\s*s/); if (s2) sec += (+s2[1]);
+  return sec > 0 ? sec : null;
+}
+
+function importStrongCsv(text, standardEinheit) {
+  const delim = ((text.split('\n')[0] || '').split(';').length > (text.split('\n')[0] || '').split(',').length) ? ';' : ',';
+  const rows = parseCsv(text, delim);
+  if (rows.length < 2) { showToast('Datei ist leer oder kein CSV'); return; }
+  const header = rows[0].map(h => h.trim().toLowerCase());
+  const col = name => header.indexOf(name);
+  const iDate = col('date'), iWo = col('workout name'), iDur = col('duration') >= 0 ? col('duration') : col('workout duration');
+  const iEx = col('exercise name'), iOrd = col('set order'), iKg = col('weight'), iKgU = col('weight unit');
+  const iReps = col('reps'), iDist = col('distance'), iDistU = col('distance unit'), iSec = col('seconds');
+  const iNote = col('workout notes'), iRpe = col('rpe');
+  if (iDate < 0 || iEx < 0) { showToast('Das ist keine Strong-CSV (Spalten „Date"/„Exercise Name" fehlen)'); return; }
+
+  try { localStorage.setItem(BACKUP_KEY, JSON.stringify(S)); } catch (e) { }
+
+  /* Zeilen zu Workouts gruppieren (Datum + Workout-Name) */
+  const gruppen = new Map();
+  for (let r = 1; r < rows.length; r++) {
+    const zeile = rows[r];
+    if (!zeile[iDate] || !zeile[iEx]) continue;
+    const key = zeile[iDate] + '||' + (iWo >= 0 ? zeile[iWo] : '');
+    if (!gruppen.has(key)) gruppen.set(key, []);
+    gruppen.get(key).push(zeile);
+  }
+
+  const neueCustoms = new Map(); // strong-name → exId
+  let cuZaehler = 0;
+  const findeExId = name => {
+    const n = name.trim().toLowerCase();
+    if (STRONG_MAP[n]) return STRONG_MAP[n];
+    const basis = n.replace(/\s*\(.*\)$/, '');
+    if (STRONG_MAP[basis]) return STRONG_MAP[basis];
+    const vorhanden = allExercises().find(e => e.name.toLowerCase() === n);
+    if (vorhanden) return vorhanden.id;
+    if (neueCustoms.has(n)) return neueCustoms.get(n);
+    const rat = strongGuessMgEq(name);
+    const id = 'cu-' + Date.now() + '-' + (++cuZaehler);
+    S.customExercises.push({ id, name: name.trim(), mg: rat.mg, eq: rat.eq, compound: false });
+    neueCustoms.set(n, id);
+    return id;
+  };
+
+  let nWorkouts = 0, nSaetze = 0, nLaeufe = 0, nUebersprungen = 0;
+  for (const [key, zeilen] of gruppen) {
+    const startedAt = new Date(zeilen[0][iDate].trim().replace(' ', 'T')).getTime();
+    if (isNaN(startedAt)) continue;
+    const woName = (iWo >= 0 && zeilen[0][iWo]) ? zeilen[0][iWo].trim() : 'Import';
+    const dauer = iDur >= 0 ? parseStrongDauer(zeilen[0][iDur]) : null;
+    const wid = 'w-strong-' + startedAt + '-' + woName.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 24);
+    if (S.workouts.some(w => w.id === wid)) { nUebersprungen++; continue; }
+
+    const exListe = [];   // Reihenfolge erhalten
+    const exMap = new Map();
+    let laufKm = 0, laufSec = 0;
+    let setIdx = 0;
+    for (const z of zeilen) {
+      const exName = z[iEx].trim();
+      if (!exName) continue;
+      /* Läufe separat einsammeln */
+      if (STRONG_LAUF.includes(exName.toLowerCase())) {
+        let km = iDist >= 0 ? (parseNum(z[iDist]) || 0) : 0;
+        if (iDistU >= 0 && /mile/i.test(z[iDistU] || '')) km *= 1.60934;
+        laufKm += km;
+        laufSec += iSec >= 0 ? (parseNum(z[iSec]) || 0) : 0;
+        continue;
+      }
+      let reps = iReps >= 0 ? parseNum(z[iReps]) : null;
+      const sekunden = iSec >= 0 ? parseNum(z[iSec]) : null;
+      if ((reps == null || reps <= 0) && sekunden > 0) reps = Math.round(sekunden); // z. B. Plank: Sekunden ins Wdh.-Feld
+      if (reps == null || reps <= 0) continue;
+      let kg = iKg >= 0 ? (parseNum(z[iKg]) || 0) : 0;
+      const einheit = iKgU >= 0 && z[iKgU] ? z[iKgU].trim().toLowerCase() : standardEinheit;
+      if (/lb/.test(einheit)) kg = Math.round(kg * 0.453592 * 100) / 100;
+      const warm = iOrd >= 0 && /^w/i.test(String(z[iOrd]).trim()) && isNaN(z[iOrd]);
+      let rpe = iRpe >= 0 ? parseNum(z[iRpe]) : null;
+      if (rpe != null && (rpe < 1 || rpe > 10)) rpe = null;
+      if (!exMap.has(exName)) { exMap.set(exName, { exId: findeExId(exName), repMin: null, repMax: null, sets: [] }); exListe.push(exMap.get(exName)); }
+      exMap.get(exName).sets.push({ kg, reps: Math.round(reps), rpe, warmup: warm, doneAt: startedAt + (setIdx++) * 1000, restSec: null });
+      nSaetze++;
+    }
+    if (laufKm > 0 && laufSec > 0) {
+      const rid = 'r-strong-' + startedAt;
+      if (!S.runs.some(r => r.id === rid)) {
+        S.runs.push({ id: rid, startedAt, distanzKm: Math.round(laufKm * 100) / 100, dauerSec: Math.round(laufSec), notiz: woName !== 'Import' ? woName : '' });
+        nLaeufe++;
+      }
+    }
+    if (exListe.length) {
+      S.workouts.push({
+        id: wid, templateId: null, name: woName, startedAt,
+        finishedAt: dauer ? startedAt + dauer * 1000 : null,
+        notiz: (iNote >= 0 && zeilen[0][iNote]) ? zeilen[0][iNote].trim() : '',
+        exercises: exListe
+      });
+      nWorkouts++;
+    }
+  }
+  S.workouts.sort((a, b) => a.startedAt - b.startedAt);
+  S.runs.sort((a, b) => a.startedAt - b.startedAt);
+  save();
+  closeSheet();
+  verlaufSub = null;
+  render();
+  openSheet('<div class="sheet-title">Strong-Import fertig</div>' +
+    '<div class="sheet-sub">' + nWorkouts + ' Workouts mit ' + nSaetze + ' Sätzen importiert' +
+    (nLaeufe ? ' · ' + nLaeufe + ' Läufe' : '') +
+    (neueCustoms.size ? '<br>' + neueCustoms.size + ' unbekannte Übungen als „eigene Übungen" angelegt' : '') +
+    (nUebersprungen ? '<br>' + nUebersprungen + ' bereits vorhandene übersprungen' : '') +
+    '<br>Vorherige Daten wurden als Backup gesichert.</div>' +
+    '<div class="sheet-actions"><button class="btn btn-primary" data-action="sheet-close">Fertig</button></div>');
 }
 
 /* ---------- Theme ---------- */
@@ -1684,6 +1942,27 @@ const ACTIONS = {
       const t = $('#imp-text').value.trim();
       if (!t) { showToast('Bitte Datei wählen oder Text einfügen'); return; }
       tryImport(t);
+    }
+  },
+  'strong-open': () => openSheet('<div class="sheet-title">Import aus Strong</div>' +
+    '<div class="sheet-sub">In der Strong-App: <b>Profil → Einstellungen → „Export Strong Data"</b> — du erhältst eine CSV-Datei (z. B. per Mail oder in „Dateien"). Wähle sie hier aus. Deine Strong-Übungen werden automatisch den Kraftlog-Übungen zugeordnet; Unbekanntes wird als eigene Übung angelegt. Doppelt importieren ist unschädlich (bereits Vorhandenes wird übersprungen).</div>' +
+    '<input type="file" id="strong-file" accept=".csv,text/csv" class="input" style="padding:11px">' +
+    '<div class="setting-row" style="margin-top:10px"><div class="li-main"><div class="li-title" style="font-size:15px">Gewichtseinheit in Strong</div>' +
+    '<div class="li-sub">nur nötig, falls die Datei keine Einheiten-Spalte hat</div></div>' +
+    '<select class="input-mini" id="strong-unit" style="width:70px"><option value="kg">kg</option><option value="lbs">lbs</option></select></div>' +
+    '<div class="form-row" style="margin-top:10px"><label>… oder CSV-Text einfügen</label><textarea class="input" id="strong-text"></textarea></div>' +
+    '<div class="sheet-actions"><button class="btn btn-primary" data-action="strong-go">Importieren</button></div>'),
+  'strong-go': () => {
+    const einheit = $('#strong-unit').value;
+    const f = $('#strong-file').files[0];
+    if (f) {
+      const r = new FileReader();
+      r.onload = () => { try { importStrongCsv(r.result, einheit); } catch (e) { showToast('Import fehlgeschlagen: ' + e.message); } };
+      r.readAsText(f);
+    } else {
+      const t = $('#strong-text').value.trim();
+      if (!t) { showToast('Bitte Datei wählen oder Text einfügen'); return; }
+      try { importStrongCsv(t, einheit); } catch (e) { showToast('Import fehlgeschlagen: ' + e.message); }
     }
   },
   'backup-restore': () => openSheet('<div class="sheet-title">Backup wiederherstellen?</div>' +
