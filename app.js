@@ -1293,19 +1293,20 @@ const STRONG_MAP = {
   'sumo deadlift (barbell)': 'sumo-kreuzheben', 'sumo deadlift': 'sumo-kreuzheben',
   'pull up': 'klimmzuege', 'pull up (weighted)': 'klimmzuege', 'chin up': 'klimmzuege', 'pull up (assisted)': 'klimmzuege',
   'lat pulldown (cable)': 'latzug', 'lat pulldown (machine)': 'latzug', 'lat pulldown': 'latzug',
-  'lat pulldown - close grip (cable)': 'latzug-eng',
+  'lat pulldown - close grip (cable)': 'latzug-eng', 'close grip lat pulldown': 'latzug-eng',
   'bent over row (barbell)': 'lh-rudern', 'bent over row': 'lh-rudern', 'pendlay row (barbell)': 'lh-rudern',
   'bent over one arm row (dumbbell)': 'kh-rudern', 'dumbbell row': 'kh-rudern',
   'seated row (cable)': 'kabelrudern', 'seated cable row': 'kabelrudern',
   't bar row': 'tbar-rudern',
-  'seated row (machine)': 'rudermaschine', 'row (machine)': 'rudermaschine',
+  'seated row (machine)': 'rudermaschine', 'row (machine)': 'rudermaschine', 'iso-lateral row (machine)': 'rudermaschine',
   'pullover (dumbbell)': 'ueberzuege',
   'shrug (barbell)': 'shrugs', 'shrug (dumbbell)': 'shrugs', 'shrug': 'shrugs',
   'overhead press (barbell)': 'schulterdruecken-lh', 'overhead press': 'schulterdruecken-lh',
   'strict military press (barbell)': 'schulterdruecken-lh', 'push press': 'schulterdruecken-lh',
   'overhead press (dumbbell)': 'schulterdruecken-kh', 'shoulder press (dumbbell)': 'schulterdruecken-kh',
   'seated overhead press (dumbbell)': 'schulterdruecken-kh',
-  'shoulder press (machine)': 'schulterdruecken-masch',
+  'shoulder press (machine)': 'schulterdruecken-masch', 'shoulder press (plate loaded)': 'schulterdruecken-masch',
+  'shoulder press': 'schulterdruecken-masch',
   'arnold press (dumbbell)': 'arnold-press',
   'lateral raise (dumbbell)': 'seitheben', 'lateral raise': 'seitheben',
   'lateral raise (cable)': 'seitheben-kabel',
@@ -1360,7 +1361,8 @@ const STRONG_MAP = {
   'reverse curl (barbell)': 'reverse-curls', 'reverse curl (ez bar)': 'reverse-curls', 'reverse curl': 'reverse-curls',
   'farmers walk': 'farmers-walk', "farmer's walk": 'farmers-walk', 'farmers walk (dumbbell)': 'farmers-walk'
 };
-const STRONG_LAUF = ['running', 'running (treadmill)', 'treadmill', 'jogging', 'trail running'];
+const STRONG_LAUF = ['running', 'running (treadmill)', 'treadmill', 'jogging', 'trail running', 'laufen', 'laufband'];
+const STRONG_RAD = ['cycling', 'cycling (indoor)', 'cycling (outdoor)', 'radfahren', 'spinning'];
 
 /* Robuster CSV-Parser (Anführungszeichen, Kommas/Zeilenumbrüche in Feldern) */
 function parseCsv(text, delim) {
@@ -1398,7 +1400,9 @@ function strongGuessMgEq(name) {
   else if (n.includes('(ez bar)')) eq = 'SZ-Stange';
   else if (n.includes('(bodyweight)') || n.includes('(weighted)') || n.includes('(assisted)')) eq = 'Körpergewicht';
   let mg = 'Rücken';
-  if (/curl/.test(n) && !/leg|wrist|reverse/.test(n)) mg = 'Bizeps';
+  if (/reverse fly|rear delt/.test(n)) mg = 'Schultern';
+  else if (/wallsit|wall sit/.test(n)) mg = 'Beine';
+  else if (/curl/.test(n) && !/leg|wrist|reverse/.test(n)) mg = 'Bizeps';
   else if (/tricep|skull|pushdown|extension/.test(n) && !/leg|back/.test(n)) mg = 'Trizeps';
   else if (/bench|chest|fly|push up|dip/.test(n)) mg = 'Brust';
   else if (/shoulder|overhead|lateral|delt|face pull|front raise|press/.test(n)) mg = 'Schultern';
@@ -1420,16 +1424,33 @@ function parseStrongDauer(str) { // "1h 10m", "45m", "58s"
 }
 
 function importStrongCsv(text, standardEinheit) {
+  text = text.replace(/^﻿/, ''); // UTF-8-BOM entfernen
   const delim = ((text.split('\n')[0] || '').split(';').length > (text.split('\n')[0] || '').split(',').length) ? ';' : ',';
   const rows = parseCsv(text, delim);
   if (rows.length < 2) { showToast('Datei ist leer oder kein CSV'); return; }
   const header = rows[0].map(h => h.trim().toLowerCase());
-  const col = name => header.indexOf(name);
-  const iDate = col('date'), iWo = col('workout name'), iDur = col('duration') >= 0 ? col('duration') : col('workout duration');
-  const iEx = col('exercise name'), iOrd = col('set order'), iKg = col('weight'), iKgU = col('weight unit');
-  const iReps = col('reps'), iDist = col('distance'), iDistU = col('distance unit'), iSec = col('seconds');
-  const iNote = col('workout notes'), iRpe = col('rpe');
-  if (iDate < 0 || iEx < 0) { showToast('Das ist keine Strong-CSV (Spalten „Date"/„Exercise Name" fehlen)'); return; }
+  /* Strong exportiert die Spaltennamen in der App-Sprache — deutsche + englische Aliase */
+  const col = (...namen) => {
+    for (const n of namen) { const i = header.indexOf(n); if (i >= 0) return i; }
+    return -1;
+  };
+  const iDate = col('date', 'datum');
+  const iWo = col('workout name', 'workout-name');
+  const iDur = col('duration', 'workout duration', 'dauer');
+  const iEx = col('exercise name', 'name der übung', 'übung', 'übungsname');
+  const iOrd = col('set order', 'reihenfolge festlegen', 'satz-reihenfolge');
+  const iKg = col('weight', 'gewicht');
+  const iKgU = col('weight unit', 'gewichtseinheit');
+  const iReps = col('reps', 'wiederh.', 'wiederholungen');
+  const iDist = col('distance', 'entfernung', 'distanz');
+  const iDistU = col('distance unit', 'entfernungseinheit');
+  const iSec = col('seconds', 'sekunden');
+  const iNote = col('workout notes', 'workout-notizen', 'notizen');
+  const iRpe = col('rpe');
+  if (iDate < 0 || iEx < 0) {
+    showToast('Spalten nicht erkannt — gefunden: ' + header.join(', '));
+    return;
+  }
 
   try { localStorage.setItem(BACKUP_KEY, JSON.stringify(S)); } catch (e) { }
 
@@ -1460,12 +1481,13 @@ function importStrongCsv(text, standardEinheit) {
     return id;
   };
 
-  let nWorkouts = 0, nSaetze = 0, nLaeufe = 0, nUebersprungen = 0;
+  let nWorkouts = 0, nSaetze = 0, nLaeufe = 0, nUebersprungen = 0, nRad = 0, nPausen = 0;
   for (const [key, zeilen] of gruppen) {
     const startedAt = new Date(zeilen[0][iDate].trim().replace(' ', 'T')).getTime();
     if (isNaN(startedAt)) continue;
     const woName = (iWo >= 0 && zeilen[0][iWo]) ? zeilen[0][iWo].trim() : 'Import';
-    const dauer = iDur >= 0 ? parseStrongDauer(zeilen[0][iDur]) : null;
+    let dauer = iDur >= 0 ? parseStrongDauer(zeilen[0][iDur]) : null;
+    if (dauer && dauer > 6 * 3600) dauer = null;   // liegengelassene Workouts ("22h 51min") nicht als Dauer werten
     const wid = 'w-strong-' + startedAt + '-' + woName.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 24);
     if (S.workouts.some(w => w.id === wid)) { nUebersprungen++; continue; }
 
@@ -1476,7 +1498,18 @@ function importStrongCsv(text, standardEinheit) {
     for (const z of zeilen) {
       const exName = z[iEx].trim();
       if (!exName) continue;
-      /* Läufe separat einsammeln */
+      const ordnung = iOrd >= 0 ? String(z[iOrd]).trim() : '';
+      /* "Ruhezeit"/"Rest Timer"-Zeilen: Pausendauer dem letzten Satz dieser Übung zuschreiben */
+      if (/^(ruhezeit|rest timer|rest)$/i.test(ordnung)) {
+        const wex = exMap.get(exName);
+        const pause = iSec >= 0 ? parseNum(z[iSec]) : null;
+        if (wex && wex.sets.length && pause > 0) {
+          const letzter = wex.sets[wex.sets.length - 1];
+          if (letzter.restSec == null) { letzter.restSec = Math.round(pause); nPausen++; }
+        }
+        continue;
+      }
+      /* Läufe separat einsammeln, Radfahren zählen (kein Lauf) */
       if (STRONG_LAUF.includes(exName.toLowerCase())) {
         let km = iDist >= 0 ? (parseNum(z[iDist]) || 0) : 0;
         if (iDistU >= 0 && /mile/i.test(z[iDistU] || '')) km *= 1.60934;
@@ -1484,6 +1517,7 @@ function importStrongCsv(text, standardEinheit) {
         laufSec += iSec >= 0 ? (parseNum(z[iSec]) || 0) : 0;
         continue;
       }
+      if (STRONG_RAD.includes(exName.toLowerCase())) { nRad++; continue; }
       let reps = iReps >= 0 ? parseNum(z[iReps]) : null;
       const sekunden = iSec >= 0 ? parseNum(z[iSec]) : null;
       if ((reps == null || reps <= 0) && sekunden > 0) reps = Math.round(sekunden); // z. B. Plank: Sekunden ins Wdh.-Feld
@@ -1491,7 +1525,7 @@ function importStrongCsv(text, standardEinheit) {
       let kg = iKg >= 0 ? (parseNum(z[iKg]) || 0) : 0;
       const einheit = iKgU >= 0 && z[iKgU] ? z[iKgU].trim().toLowerCase() : standardEinheit;
       if (/lb/.test(einheit)) kg = Math.round(kg * 0.453592 * 100) / 100;
-      const warm = iOrd >= 0 && /^w/i.test(String(z[iOrd]).trim()) && isNaN(z[iOrd]);
+      const warm = /^w/i.test(ordnung) && isNaN(ordnung);
       let rpe = iRpe >= 0 ? parseNum(z[iRpe]) : null;
       if (rpe != null && (rpe < 1 || rpe > 10)) rpe = null;
       if (!exMap.has(exName)) { exMap.set(exName, { exId: findeExId(exName), repMin: null, repMax: null, sets: [] }); exListe.push(exMap.get(exName)); }
@@ -1524,7 +1558,9 @@ function importStrongCsv(text, standardEinheit) {
   openSheet('<div class="sheet-title">Strong-Import fertig</div>' +
     '<div class="sheet-sub">' + nWorkouts + ' Workouts mit ' + nSaetze + ' Sätzen importiert' +
     (nLaeufe ? ' · ' + nLaeufe + ' Läufe' : '') +
+    (nPausen ? '<br>' + nPausen + ' Pausenzeiten übernommen' : '') +
     (neueCustoms.size ? '<br>' + neueCustoms.size + ' unbekannte Übungen als „eigene Übungen" angelegt' : '') +
+    (nRad ? '<br>' + nRad + ' Radfahr-Einträge übersprungen (Kraftlog trackt Läufe, kein Rad)' : '') +
     (nUebersprungen ? '<br>' + nUebersprungen + ' bereits vorhandene übersprungen' : '') +
     '<br>Vorherige Daten wurden als Backup gesichert.</div>' +
     '<div class="sheet-actions"><button class="btn btn-primary" data-action="sheet-close">Fertig</button></div>');
