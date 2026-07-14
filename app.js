@@ -736,6 +736,7 @@ function renderPlaene() {
       '<div class="li-sub">' + tpl.exercises.map(it => esc(exById(it.exId).name)).join(', ') + '</div></div><span class="chev">›</span></button>';
   }
   h += '<button class="btn btn-block btn-primary" style="margin-top:8px" data-action="tpl-new">+ Neuer Plan</button>';
+  if (S.workouts.length) h += '<button class="btn btn-block btn-soft" style="margin-top:10px" data-action="tpl-derive">Pläne aus dem Verlauf erstellen</button>';
   return h;
 }
 function renderTplEditor() {
@@ -1423,7 +1424,65 @@ function parseStrongDauer(str) { // "1h 10m", "45m", "58s"
   return sec > 0 ? sec : null;
 }
 
-function importStrongCsv(text, standardEinheit) {
+/* Pläne aus Workouts ableiten: pro (getrimmtem) Workout-Namen die neueste Einheit als Vorlage */
+function medianRest(werte) {
+  if (!werte.length) return null;
+  const s = [...werte].sort((a, b) => a - b);
+  const m = s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
+  const r = Math.round(m / 15) * 15;
+  return (r >= 30 && r <= 600) ? r : null;
+}
+function deriveTemplateExercises(w) {
+  return w.exercises.map(wex => ({
+    exId: wex.exId,
+    restSec: medianRest(wex.sets.map(s => s.restSec).filter(x => x != null)),
+    sets: wex.sets.filter(s => s.reps > 0).map(s => s.warmup
+      ? { warmup: true, kg: s.kg != null ? s.kg : 0, reps: s.reps }
+      : { reps: s.reps })
+  })).filter(it => it.sets.length);
+}
+function erstellePlaeneAus(workouts) {
+  const neueste = new Map();
+  for (const w of workouts) {
+    const name = (w.name || '').trim() || 'Import';
+    const alt = neueste.get(name);
+    if (!alt || w.startedAt > alt.startedAt) neueste.set(name, w);
+  }
+  const angelegt = [], uebersprungen = [];
+  let n = 0;
+  for (const [name, w] of neueste) {
+    if (S.templates.some(t => t.name.trim().toLowerCase() === name.toLowerCase())) { uebersprungen.push(name); continue; }
+    const exs = deriveTemplateExercises(w);
+    if (!exs.length) continue;
+    S.templates.push({ id: 't-' + Date.now() + '-' + (++n), name, createdAt: Date.now(), exercises: exs });
+    angelegt.push(name);
+  }
+  return { angelegt, uebersprungen };
+}
+function strongStart(modus) {
+  const einheit = $('#strong-unit').value;
+  const f = $('#strong-file').files[0];
+  const los = t => { try { importStrongCsv(t, einheit, modus); } catch (e) { showToast('Import fehlgeschlagen: ' + e.message); } };
+  if (f) {
+    const r = new FileReader();
+    r.onload = () => los(r.result);
+    r.readAsText(f);
+  } else {
+    const t = $('#strong-text').value.trim();
+    if (!t) { showToast('Bitte Datei wählen oder Text einfügen'); return; }
+    los(t);
+  }
+}
+function plaeneErgebnisSheet(erg) {
+  openSheet('<div class="sheet-title">Pläne erstellt</div><div class="sheet-sub">' +
+    (erg.angelegt.length ? erg.angelegt.length + ' Pläne angelegt: <b>' + erg.angelegt.map(esc).join('</b>, <b>') + '</b>' : 'Keine neuen Pläne angelegt.') +
+    (erg.uebersprungen.length ? '<br>Übersprungen, weil der Name schon existiert: ' + erg.uebersprungen.map(esc).join(', ') : '') +
+    '<br><br>Jeder Plan entspricht deiner jeweils letzten Einheit dieses Workouts — inkl. Aufwärmsätzen und typischer Pausenzeit. Unter „Pläne verwalten" kannst du alles anpassen.</div>' +
+    '<div class="sheet-actions"><button class="btn btn-primary" data-action="sheet-close">Fertig</button></div>');
+}
+
+function importStrongCsv(text, standardEinheit, modus) {
+  modus = modus || 'verlauf';
   text = text.replace(/^﻿/, ''); // UTF-8-BOM entfernen
   const delim = ((text.split('\n')[0] || '').split(';').length > (text.split('\n')[0] || '').split(',').length) ? ';' : ',';
   const rows = parseCsv(text, delim);
@@ -1463,6 +1522,19 @@ function importStrongCsv(text, standardEinheit) {
     if (!gruppen.has(key)) gruppen.set(key, []);
     gruppen.get(key).push(zeile);
   }
+  /* Nur-Pläne-Modus: pro Workout-Name nur die neueste Einheit betrachten */
+  if (modus === 'plaene') {
+    const neueste = new Map();
+    for (const [key, zeilen] of gruppen) {
+      const t = new Date(zeilen[0][iDate].trim().replace(' ', 'T')).getTime();
+      const name = (iWo >= 0 && zeilen[0][iWo]) ? zeilen[0][iWo].trim() : 'Import';
+      const alt = neueste.get(name);
+      if (!alt || t > alt.t) neueste.set(name, { t, key });
+    }
+    const behalten = new Set([...neueste.values()].map(x => x.key));
+    for (const key of [...gruppen.keys()]) if (!behalten.has(key)) gruppen.delete(key);
+  }
+  const neueWorkouts = [];
 
   const neueCustoms = new Map(); // strong-name → exId
   let cuZaehler = 0;
@@ -1489,7 +1561,7 @@ function importStrongCsv(text, standardEinheit) {
     let dauer = iDur >= 0 ? parseStrongDauer(zeilen[0][iDur]) : null;
     if (dauer && dauer > 6 * 3600) dauer = null;   // liegengelassene Workouts ("22h 51min") nicht als Dauer werten
     const wid = 'w-strong-' + startedAt + '-' + woName.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 24);
-    if (S.workouts.some(w => w.id === wid)) { nUebersprungen++; continue; }
+    if (modus !== 'plaene' && S.workouts.some(w => w.id === wid)) { nUebersprungen++; continue; }
 
     const exListe = [];   // Reihenfolge erhalten
     const exMap = new Map();
@@ -1532,7 +1604,7 @@ function importStrongCsv(text, standardEinheit) {
       exMap.get(exName).sets.push({ kg, reps: Math.round(reps), rpe, warmup: warm, doneAt: startedAt + (setIdx++) * 1000, restSec: null });
       nSaetze++;
     }
-    if (laufKm > 0 && laufSec > 0) {
+    if (modus !== 'plaene' && laufKm > 0 && laufSec > 0) {
       const rid = 'r-strong-' + startedAt;
       if (!S.runs.some(r => r.id === rid)) {
         S.runs.push({ id: rid, startedAt, distanzKm: Math.round(laufKm * 100) / 100, dauerSec: Math.round(laufSec), notiz: woName !== 'Import' ? woName : '' });
@@ -1540,14 +1612,27 @@ function importStrongCsv(text, standardEinheit) {
       }
     }
     if (exListe.length) {
-      S.workouts.push({
+      const wo = {
         id: wid, templateId: null, name: woName, startedAt,
         finishedAt: dauer ? startedAt + dauer * 1000 : null,
         notiz: (iNote >= 0 && zeilen[0][iNote]) ? zeilen[0][iNote].trim() : '',
         exercises: exListe
-      });
+      };
+      if (modus === 'plaene') neueWorkouts.push(wo);
+      else S.workouts.push(wo);
       nWorkouts++;
     }
+  }
+  /* Nur-Pläne-Modus: Vorlagen ableiten, Verlauf unangetastet lassen */
+  if (modus === 'plaene') {
+    const erg = erstellePlaeneAus(neueWorkouts);
+    save();
+    closeSheet();
+    tab = 'start';
+    trainSub = 'plaene';
+    render();
+    plaeneErgebnisSheet(erg);
+    return;
   }
   S.workouts.sort((a, b) => a.startedAt - b.startedAt);
   S.runs.sort((a, b) => a.startedAt - b.startedAt);
@@ -1981,25 +2066,23 @@ const ACTIONS = {
     }
   },
   'strong-open': () => openSheet('<div class="sheet-title">Import aus Strong</div>' +
-    '<div class="sheet-sub">In der Strong-App: <b>Profil → Einstellungen → „Export Strong Data"</b> — du erhältst eine CSV-Datei (z. B. per Mail oder in „Dateien"). Wähle sie hier aus. Deine Strong-Übungen werden automatisch den Kraftlog-Übungen zugeordnet; Unbekanntes wird als eigene Übung angelegt. Doppelt importieren ist unschädlich (bereits Vorhandenes wird übersprungen).</div>' +
+    '<div class="sheet-sub">In der Strong-App: <b>Profil → Einstellungen → „Export Strong Data"</b> — du erhältst eine CSV-Datei (z. B. per Mail oder in „Dateien"). Wähle sie hier aus.<br><br>' +
+    '<b>Verlauf importieren</b> übernimmt alle vergangenen Workouts (inkl. Pausenzeiten) in deinen Verlauf und deine Statistiken.<br>' +
+    '<b>Nur Pläne erstellen</b> legt aus der jeweils letzten Einheit jedes Workout-Namens (z. B. „Chest", „Legs") eine Vorlage an — ohne den Verlauf zu füllen. Beides ist wiederholbar, Vorhandenes wird übersprungen.</div>' +
     '<input type="file" id="strong-file" accept=".csv,text/csv" class="input" style="padding:11px">' +
     '<div class="setting-row" style="margin-top:10px"><div class="li-main"><div class="li-title" style="font-size:15px">Gewichtseinheit in Strong</div>' +
     '<div class="li-sub">nur nötig, falls die Datei keine Einheiten-Spalte hat</div></div>' +
     '<select class="input-mini" id="strong-unit" style="width:70px"><option value="kg">kg</option><option value="lbs">lbs</option></select></div>' +
     '<div class="form-row" style="margin-top:10px"><label>… oder CSV-Text einfügen</label><textarea class="input" id="strong-text"></textarea></div>' +
-    '<div class="sheet-actions"><button class="btn btn-primary" data-action="strong-go">Importieren</button></div>'),
-  'strong-go': () => {
-    const einheit = $('#strong-unit').value;
-    const f = $('#strong-file').files[0];
-    if (f) {
-      const r = new FileReader();
-      r.onload = () => { try { importStrongCsv(r.result, einheit); } catch (e) { showToast('Import fehlgeschlagen: ' + e.message); } };
-      r.readAsText(f);
-    } else {
-      const t = $('#strong-text').value.trim();
-      if (!t) { showToast('Bitte Datei wählen oder Text einfügen'); return; }
-      try { importStrongCsv(t, einheit); } catch (e) { showToast('Import fehlgeschlagen: ' + e.message); }
-    }
+    '<div class="sheet-actions"><button class="btn btn-primary" data-action="strong-go">Verlauf importieren</button>' +
+    '<button class="btn btn-soft" data-action="strong-plaene">Nur Pläne erstellen</button></div>'),
+  'strong-go': () => strongStart('verlauf'),
+  'strong-plaene': () => strongStart('plaene'),
+  'tpl-derive': () => {
+    const erg = erstellePlaeneAus(S.workouts);
+    save();
+    render();
+    plaeneErgebnisSheet(erg);
   },
   'backup-restore': () => openSheet('<div class="sheet-title">Backup wiederherstellen?</div>' +
     '<div class="sheet-sub">Der aktuelle Stand wird mit dem Backup getauscht (erneutes Wiederherstellen macht das rückgängig).</div>' +
