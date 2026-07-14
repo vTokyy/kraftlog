@@ -1076,6 +1076,7 @@ function renderUebungDetail() {
       wex.sets.map(s => (s.warmup ? '(' : '') + fmtKg(s.kg) + '×' + s.reps + (s.warmup ? ')' : '')).join(' · ') + '</div></div>';
   });
   if (ex.id.indexOf('cu-') === 0) {
+    h += '<button class="btn btn-block" style="margin-top:10px" data-action="cu-edit" data-id="' + esc(ex.id) + '">Übung bearbeiten (Name, Muskelgruppe, Gerät)</button>';
     h += '<button class="btn btn-block btn-danger" style="margin-top:10px" data-action="cu-del" data-id="' + esc(ex.id) + '">Eigene Übung löschen</button>';
   }
   return h;
@@ -1461,8 +1462,9 @@ function erstellePlaeneAus(workouts) {
 }
 function strongStart(modus) {
   const einheit = $('#strong-unit').value;
+  const originalNamen = $('#strong-namen').checked;
   const f = $('#strong-file').files[0];
-  const los = t => { try { importStrongCsv(t, einheit, modus); } catch (e) { showToast('Import fehlgeschlagen: ' + e.message); } };
+  const los = t => { try { importStrongCsv(t, einheit, modus, originalNamen); } catch (e) { showToast('Import fehlgeschlagen: ' + e.message); } };
   if (f) {
     const r = new FileReader();
     r.onload = () => los(r.result);
@@ -1481,7 +1483,7 @@ function plaeneErgebnisSheet(erg) {
     '<div class="sheet-actions"><button class="btn btn-primary" data-action="sheet-close">Fertig</button></div>');
 }
 
-function importStrongCsv(text, standardEinheit, modus) {
+function importStrongCsv(text, standardEinheit, modus, originalNamen) {
   modus = modus || 'verlauf';
   text = text.replace(/^﻿/, ''); // UTF-8-BOM entfernen
   const delim = ((text.split('\n')[0] || '').split(';').length > (text.split('\n')[0] || '').split(',').length) ? ';' : ',';
@@ -1540,15 +1542,30 @@ function importStrongCsv(text, standardEinheit, modus) {
   let cuZaehler = 0;
   const findeExId = name => {
     const n = name.trim().toLowerCase();
-    if (STRONG_MAP[n]) return STRONG_MAP[n];
     const basis = n.replace(/\s*\(.*\)$/, '');
-    if (STRONG_MAP[basis]) return STRONG_MAP[basis];
+    /* Nur bei abgeschaltetem Original-Namen-Modus auf Kraftlog-Übungen abbilden */
+    if (!originalNamen) {
+      if (STRONG_MAP[n]) return STRONG_MAP[n];
+      if (STRONG_MAP[basis]) return STRONG_MAP[basis];
+    }
+    /* Exakter Namens-Treffer (eingebaut oder bereits angelegt) — macht Re-Importe stabil */
     const vorhanden = allExercises().find(e => e.name.toLowerCase() === n);
     if (vorhanden) return vorhanden.id;
     if (neueCustoms.has(n)) return neueCustoms.get(n);
+    /* Neu anlegen mit Original-Namen. Kategorie: wenn die Übung bekannt ist (Mapping),
+       Muskelgruppe/Grundübungs-Flag von der Kraftlog-Entsprechung erben — nur der Name bleibt original. */
+    const vorlageId = STRONG_MAP[n] || STRONG_MAP[basis];
     const rat = strongGuessMgEq(name);
+    let mg = rat.mg, eq = rat.eq, compound = false;
+    if (vorlageId) {
+      const v = exById(vorlageId);
+      mg = v.mg;
+      compound = !!v.compound;
+      /* Equipment: Klammerhinweis im Original-Namen gewinnt, sonst von der Vorlage */
+      eq = /\((barbell|dumbbell|kettlebell|cable|machine|smith|ez bar|bodyweight|weighted|assisted)/i.test(name) ? rat.eq : v.eq;
+    }
     const id = 'cu-' + Date.now() + '-' + (++cuZaehler);
-    S.customExercises.push({ id, name: name.trim(), mg: rat.mg, eq: rat.eq, compound: false });
+    S.customExercises.push({ id, name: name.trim(), mg, eq, compound });
     neueCustoms.set(n, id);
     return id;
   };
@@ -1968,6 +1985,31 @@ const ACTIONS = {
     render();
     showToast('Übung angelegt');
   },
+  'cu-edit': el => {
+    const ex = exById(el.dataset.id);
+    openSheet('<div class="sheet-title">Übung bearbeiten</div>' +
+      '<div class="form-row"><label>Name</label><input class="input" id="cu-name" value="' + esc(ex.name) + '"></div>' +
+      '<div class="form-row"><label>Muskelgruppe</label><select class="input" id="cu-mg">' + MGS.map(m => '<option' + (m === ex.mg ? ' selected' : '') + '>' + esc(m) + '</option>').join('') + '</select></div>' +
+      '<div class="form-row"><label>Equipment</label><select class="input" id="cu-eq">' + EQS.map(m => '<option' + (m === ex.eq ? ' selected' : '') + '>' + esc(m) + '</option>').join('') + '</select></div>' +
+      '<div class="setting-row" style="box-shadow:none"><div class="li-main"><div class="li-title" style="font-size:15px">Grundübung</div>' +
+      '<div class="li-sub">längere Standardpause, größerer Steigerungsschritt</div></div>' +
+      '<label class="switch"><input type="checkbox" id="cu-compound"' + (ex.compound ? ' checked' : '') + '><span class="knob"></span></label></div>' +
+      '<div class="sheet-actions"><button class="btn btn-primary" data-action="cu-edit-save" data-id="' + esc(ex.id) + '">Speichern</button></div>');
+  },
+  'cu-edit-save': el => {
+    const c = S.customExercises.find(e => e.id === el.dataset.id);
+    if (!c) return;
+    const name = $('#cu-name').value.trim();
+    if (!name) { showToast('Bitte einen Namen eingeben'); return; }
+    c.name = name;
+    c.mg = $('#cu-mg').value;
+    c.eq = $('#cu-eq').value;
+    c.compound = $('#cu-compound').checked;
+    save();
+    closeSheet();
+    render();
+    showToast('Übung aktualisiert');
+  },
   'cu-del': el => {
     const id = el.dataset.id;
     if (sessionsFor(id).length) { showToast('Übung wird im Verlauf verwendet — nicht löschbar'); return; }
@@ -2070,6 +2112,9 @@ const ACTIONS = {
     '<b>Verlauf importieren</b> übernimmt alle vergangenen Workouts (inkl. Pausenzeiten) in deinen Verlauf und deine Statistiken.<br>' +
     '<b>Nur Pläne erstellen</b> legt aus der jeweils letzten Einheit jedes Workout-Namens (z. B. „Chest", „Legs") eine Vorlage an — ohne den Verlauf zu füllen. Beides ist wiederholbar, Vorhandenes wird übersprungen.</div>' +
     '<input type="file" id="strong-file" accept=".csv,text/csv" class="input" style="padding:11px">' +
+    '<div class="setting-row" style="margin-top:10px"><div class="li-main"><div class="li-title" style="font-size:15px">Original-Übungsnamen behalten</div>' +
+    '<div class="li-sub">Übungen heißen wie in Strong und werden bei Bedarf neu angelegt. Aus: bekannte Übungen werden den deutschen Kraftlog-Übungen zugeordnet.</div></div>' +
+    '<label class="switch"><input type="checkbox" id="strong-namen" checked><span class="knob"></span></label></div>' +
     '<div class="setting-row" style="margin-top:10px"><div class="li-main"><div class="li-title" style="font-size:15px">Gewichtseinheit in Strong</div>' +
     '<div class="li-sub">nur nötig, falls die Datei keine Einheiten-Spalte hat</div></div>' +
     '<select class="input-mini" id="strong-unit" style="width:70px"><option value="kg">kg</option><option value="lbs">lbs</option></select></div>' +
