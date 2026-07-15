@@ -410,6 +410,7 @@ function hideChartTip() { $('#chart-tip').classList.add('hidden'); }
 let tab = 'start';
 let trainSub = null;     // null | 'plaene' | 'tpl-editor'
 let tplDraft = null;     // Arbeitskopie im Vorlagen-Editor
+let planAuswahl = null;  // Set von Plan-IDs im Auswahlmodus (null = normal)
 let uebSub = null;       // null | { exId }
 let uebFilter = { q: '', mg: null, eq: null };
 let verlaufSub = null;   // null | { id }
@@ -728,15 +729,38 @@ function endRest(exakt) {
 
 /* --- Pläne (Vorlagen) --- */
 function renderPlaene() {
-  let h = '<button class="back-btn" data-action="train-home">‹ Training</button><h1 class="view-title">Trainingspläne</h1>';
+  const auswahl = planAuswahl;
+  let h = '<button class="back-btn" data-action="train-home">‹ Training</button>';
+  h += '<div style="display:flex;align-items:flex-start;gap:10px">' +
+    '<h1 class="view-title" style="flex:1">Trainingspläne</h1>' +
+    (S.templates.length ? '<button class="btn btn-small' + (auswahl ? ' btn-primary' : '') + '" style="margin-top:6px" data-action="tpl-select-mode">' + (auswahl ? 'Fertig' : 'Auswählen') + '</button>' : '') +
+    '</div>';
   if (!S.templates.length) h += '<div class="empty"><p>Noch keine Pläne.<br>Erstelle z. B. „Push A" mit deinen Übungen und Ziel-Wiederholungsbereichen.</p></div>';
-  for (const tpl of S.templates) {
-    h += '<button class="li-item" data-action="tpl-edit" data-id="' + esc(tpl.id) + '">' +
-      '<div class="li-main"><div class="li-title">' + esc(tpl.name) + '</div>' +
-      '<div class="li-sub">' + tpl.exercises.map(it => esc(exById(it.exId).name)).join(', ') + '</div></div><span class="chev">›</span></button>';
+  if (auswahl) {
+    h += '<div class="mini-note" style="margin:-8px 0 10px 2px">' + auswahl.size + ' ausgewählt · ' +
+      '<button class="linklike" data-action="tpl-select-all">' + (auswahl.size === S.templates.length ? 'Keine' : 'Alle') + ' auswählen</button></div>';
   }
-  h += '<button class="btn btn-block btn-primary" style="margin-top:8px" data-action="tpl-new">+ Neuer Plan</button>';
-  if (S.workouts.length) h += '<button class="btn btn-block btn-soft" style="margin-top:10px" data-action="tpl-derive">Pläne aus dem Verlauf erstellen</button>';
+  for (const tpl of S.templates) {
+    const inhalt = '<div class="li-main"><div class="li-title">' + esc(tpl.name) + '</div>' +
+      '<div class="li-sub">' + tpl.exercises.map(it => esc(exById(it.exId).name)).join(', ') + '</div></div>';
+    if (auswahl) {
+      const an = auswahl.has(tpl.id);
+      h += '<button class="li-item' + (an ? ' li-selected' : '') + '" data-action="tpl-select" data-id="' + esc(tpl.id) + '">' +
+        '<span class="sel-dot' + (an ? ' on' : '') + '">' + (an ? '✓' : '') + '</span>' + inhalt + '</button>';
+    } else {
+      h += '<button class="li-item" data-action="tpl-edit" data-id="' + esc(tpl.id) + '">' + inhalt + '<span class="chev">›</span></button>';
+    }
+  }
+  if (auswahl) {
+    h += '<div class="row-2" style="margin-top:14px">' +
+      '<button class="btn btn-danger" data-action="tpl-bulk-del">Löschen</button>' +
+      '<button class="btn" data-action="tpl-bulk-export">Exportieren</button>' +
+      '<button class="btn" data-action="tpl-bulk-dup">Duplizieren</button></div>';
+  } else {
+    h += '<button class="btn btn-block btn-primary" style="margin-top:8px" data-action="tpl-new">+ Neuer Plan</button>';
+    if (S.workouts.length) h += '<button class="btn btn-block btn-soft" style="margin-top:10px" data-action="tpl-derive">Pläne aus dem Verlauf erstellen</button>';
+    h += '<button class="btn btn-block" style="margin-top:10px" data-action="tpl-import-open">Pläne importieren…</button>';
+  }
   return h;
 }
 function renderTplEditor() {
@@ -1475,11 +1499,82 @@ function strongStart(modus) {
     los(t);
   }
 }
-function plaeneErgebnisSheet(erg) {
+/* Pläne als Datei exportieren/importieren — inkl. der referenzierten eigenen Übungen,
+   damit geteilte Pläne auch bei Freunden funktionieren. */
+function exportPlaene(ids) {
+  const tpls = S.templates.filter(t => ids.indexOf(t.id) >= 0);
+  if (!tpls.length) { showToast('Nichts ausgewählt'); return; }
+  const exIds = new Set();
+  tpls.forEach(t => t.exercises.forEach(it => exIds.add(it.exId)));
+  const daten = {
+    typ: 'kraftlog-plaene', schemaVersion: SCHEMA_VERSION,
+    templates: tpls,
+    customExercises: S.customExercises.filter(c => exIds.has(c.id))
+  };
+  const json = JSON.stringify(daten, null, 1);
+  const name = 'kraftlog-plaene-' + todayStr() + '.json';
+  try {
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    showToast(tpls.length + ' Pläne exportiert: ' + name);
+  } catch (e) {
+    openSheet('<div class="sheet-title">Pläne exportieren</div><div class="sheet-sub">Text markieren und kopieren:</div>' +
+      '<textarea class="input" style="min-height:150px" readonly onclick="this.select()">' + esc(json) + '</textarea>');
+  }
+}
+function importPlaene(text) {
+  let obj;
+  try { obj = JSON.parse(text); } catch (e) { showToast('Ungültiges JSON'); return; }
+  if (!obj || obj.typ !== 'kraftlog-plaene' || !Array.isArray(obj.templates)) {
+    showToast('Keine Kraftlog-Plan-Datei');
+    return;
+  }
+  /* Mitgelieferte eigene Übungen anlegen bzw. per Name auf vorhandene umleiten */
+  const remap = {};
+  (Array.isArray(obj.customExercises) ? obj.customExercises : []).forEach(c => {
+    if (!c || !c.id || !c.name) return;
+    if (allExercises().some(e => e.id === c.id)) return;
+    const perName = allExercises().find(e => e.name.toLowerCase() === String(c.name).toLowerCase());
+    if (perName) { remap[c.id] = perName.id; return; }
+    S.customExercises.push({
+      id: String(c.id), name: String(c.name).trim(),
+      mg: MGS.indexOf(c.mg) >= 0 ? c.mg : 'Rücken',
+      eq: EQS.indexOf(c.eq) >= 0 ? c.eq : 'Maschine',
+      compound: !!c.compound
+    });
+  });
+  const angelegt = [], uebersprungen = [];
+  let n = 0;
+  obj.templates.forEach(t => {
+    if (!t || !t.name || !Array.isArray(t.exercises)) return;
+    const name = String(t.name).trim();
+    if (S.templates.some(x => x.name.trim().toLowerCase() === name.toLowerCase())) { uebersprungen.push(name); return; }
+    const exs = t.exercises
+      .filter(it => it && it.exId)
+      .map(it => normalizeTplExercise({ exId: remap[it.exId] || String(it.exId), restSec: it.restSec, sets: it.sets }))
+      .filter(it => it.sets.length && allExercises().some(e => e.id === it.exId));
+    if (!exs.length) return;
+    S.templates.push({ id: 't-import-' + Date.now() + '-' + (++n), name, createdAt: Date.now(), exercises: exs });
+    angelegt.push(name);
+  });
+  save();
+  closeSheet();
+  render();
+  plaeneErgebnisSheet({ angelegt, uebersprungen }, 'Die importierten Pläne findest du unter „Pläne verwalten" — dort kannst du alles anpassen.');
+}
+
+function plaeneErgebnisSheet(erg, hinweis) {
   openSheet('<div class="sheet-title">Pläne erstellt</div><div class="sheet-sub">' +
     (erg.angelegt.length ? erg.angelegt.length + ' Pläne angelegt: <b>' + erg.angelegt.map(esc).join('</b>, <b>') + '</b>' : 'Keine neuen Pläne angelegt.') +
     (erg.uebersprungen.length ? '<br>Übersprungen, weil der Name schon existiert: ' + erg.uebersprungen.map(esc).join(', ') : '') +
-    '<br><br>Jeder Plan entspricht deiner jeweils letzten Einheit dieses Workouts — inkl. Aufwärmsätzen und typischer Pausenzeit. Unter „Pläne verwalten" kannst du alles anpassen.</div>' +
+    '<br><br>' + (hinweis || 'Jeder Plan entspricht deiner jeweils letzten Einheit dieses Workouts — inkl. Aufwärmsätzen und typischer Pausenzeit. Unter „Pläne verwalten" kannst du alles anpassen.') + '</div>' +
     '<div class="sheet-actions"><button class="btn btn-primary" data-action="sheet-close">Fertig</button></div>');
 }
 
@@ -1677,12 +1772,12 @@ function applyTheme() {
 
 /* ---------- Aktionen (Klick-Dispatch über data-action) ---------- */
 const ACTIONS = {
-  'tab': el => { tab = el.dataset.tab; trainSub = null; uebSub = null; verlaufSub = null; editDraft = null; tplDraft = null; closeSheet(); render(); window.scrollTo(0, 0); },
+  'tab': el => { tab = el.dataset.tab; trainSub = null; uebSub = null; verlaufSub = null; editDraft = null; tplDraft = null; planAuswahl = null; closeSheet(); render(); window.scrollTo(0, 0); },
   'sheet-close': () => closeSheet(),
 
   /* Training / Pläne */
-  'train-home': () => { trainSub = null; tplDraft = null; render(); },
-  'plaene': () => { trainSub = 'plaene'; tplDraft = null; render(); },
+  'train-home': () => { trainSub = null; tplDraft = null; planAuswahl = null; render(); },
+  'plaene': () => { trainSub = 'plaene'; tplDraft = null; planAuswahl = null; render(); },
   'tpl-new': () => { tplDraft = { id: null, name: '', createdAt: null, exercises: [] }; trainSub = 'tpl-editor'; render(); },
   'tpl-edit': el => {
     const t = S.templates.find(x => x.id === el.dataset.id);
@@ -2128,6 +2223,72 @@ const ACTIONS = {
     save();
     render();
     plaeneErgebnisSheet(erg);
+  },
+
+  /* Pläne: Auswahlmodus (mehrere löschen / exportieren / duplizieren) */
+  'tpl-select-mode': () => { planAuswahl = planAuswahl ? null : new Set(); render(); },
+  'tpl-select': el => {
+    if (planAuswahl.has(el.dataset.id)) planAuswahl.delete(el.dataset.id);
+    else planAuswahl.add(el.dataset.id);
+    render();
+  },
+  'tpl-select-all': () => {
+    if (planAuswahl.size === S.templates.length) planAuswahl.clear();
+    else S.templates.forEach(t => planAuswahl.add(t.id));
+    render();
+  },
+  'tpl-bulk-del': () => {
+    if (!planAuswahl || !planAuswahl.size) { showToast('Nichts ausgewählt'); return; }
+    const namen = S.templates.filter(t => planAuswahl.has(t.id)).map(t => esc(t.name));
+    openSheet('<div class="sheet-title">' + namen.length + ' Pläne löschen?</div>' +
+      '<div class="sheet-sub">' + namen.join(', ') + '<br>Deine Trainings im Verlauf bleiben erhalten.</div>' +
+      '<div class="sheet-actions"><button class="btn btn-danger" data-action="tpl-bulk-del-confirm">Löschen</button>' +
+      '<button class="btn" data-action="sheet-close">Abbrechen</button></div>');
+  },
+  'tpl-bulk-del-confirm': () => {
+    const n = planAuswahl.size;
+    S.templates = S.templates.filter(t => !planAuswahl.has(t.id));
+    planAuswahl = new Set();
+    save();
+    closeSheet();
+    render();
+    showToast(n + ' Pläne gelöscht');
+  },
+  'tpl-bulk-export': () => {
+    if (!planAuswahl || !planAuswahl.size) { showToast('Nichts ausgewählt'); return; }
+    exportPlaene([...planAuswahl]);
+  },
+  'tpl-bulk-dup': () => {
+    if (!planAuswahl || !planAuswahl.size) { showToast('Nichts ausgewählt'); return; }
+    let n = 0;
+    S.templates.filter(t => planAuswahl.has(t.id)).forEach(t => {
+      const kopie = JSON.parse(JSON.stringify(t));
+      kopie.id = 't-' + Date.now() + '-k' + (++n);
+      kopie.name = t.name + ' Kopie';
+      kopie.createdAt = Date.now();
+      S.templates.push(kopie);
+    });
+    planAuswahl = null;
+    save();
+    render();
+    showToast(n + ' Pläne dupliziert');
+  },
+  'tpl-import-open': () => openSheet('<div class="sheet-title">Pläne importieren</div>' +
+    '<div class="sheet-sub">Wähle eine Kraftlog-Plan-Datei (aus „Exportieren" — deiner oder von Freunden). Enthaltene eigene Übungen werden automatisch mit angelegt. Pläne, deren Name schon existiert, werden übersprungen.</div>' +
+    '<input type="file" id="tplimp-file" accept=".json,application/json" class="input" style="padding:11px">' +
+    '<div class="form-row" style="margin-top:10px"><label>… oder Text einfügen</label><textarea class="input" id="tplimp-text"></textarea></div>' +
+    '<div class="sheet-actions"><button class="btn btn-primary" data-action="tpl-import-go">Importieren</button></div>'),
+  'tpl-import-go': () => {
+    const f = $('#tplimp-file').files[0];
+    if (f) {
+      const r = new FileReader();
+      r.onload = () => importPlaene(r.result);
+      r.readAsText(f);
+    } else {
+      const t = $('#tplimp-text').value.trim();
+      if (!t) { showToast('Bitte Datei wählen oder Text einfügen'); return; }
+      importPlaene(t);
+    }
   },
   'backup-restore': () => openSheet('<div class="sheet-title">Backup wiederherstellen?</div>' +
     '<div class="sheet-sub">Der aktuelle Stand wird mit dem Backup getauscht (erneutes Wiederherstellen macht das rückgängig).</div>' +
