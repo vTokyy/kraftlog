@@ -24,6 +24,7 @@ const EQS = window.KRAFTLOG_EQUIPMENT || [];
 const Charts = window.KraftlogCharts;
 const Signal = window.KraftlogTimer;
 const Icons = window.KraftlogIcons;
+const Coach = window.KraftlogCoach;
 const RPE_WERTE = ['6', '6.5', '7', '7.5', '8', '8.5', '9', '9.5', '10'];
 const TAG_MS = 86400000;
 
@@ -42,6 +43,7 @@ function defaults() {
     schemaVersion: SCHEMA_VERSION,
     settings: {
       theme: 'auto', sound: true, vibration: true,
+      coach: true,
       restCompound: 180, restIsolation: 90,
       incUpper: 2.5, incLower: 5, lastExport: null,
       groesseCm: null
@@ -163,11 +165,15 @@ function exById(id) {
   return allExercises().find(e => e.id === id) || { id, name: 'Gelöschte Übung', mg: MGS[0], eq: EQS[0], compound: false };
 }
 function restDefault(exId) { return exById(exId).compound ? S.settings.restCompound : S.settings.restIsolation; }
+/* Standardpause: Coach-Kategorie (differenziert nach Übungstyp/Muskelgruppe) oder Pauschalwerte */
+function pauseStandard(exId) {
+  return (S.settings.coach !== false) ? Coach.pauseFuer(exById(exId)) : restDefault(exId);
+}
 function restTarget(exId, tplRest) {
   if (tplRest) return tplRest;
   const o = S.exerciseSettings[exId];
   if (o && o.restSec) return o.restSec;
-  return restDefault(exId);
+  return pauseStandard(exId);
 }
 
 /* ---------- Satz-/Workout-Helfer ---------- */
@@ -302,24 +308,42 @@ function repRangeText(repMin, repMax) {
   return (repMin === repMax) ? (repMin + ' Wdh.') : (repMin + '–' + repMax + ' Wdh.');
 }
 function progressionFor(exId, repMin, repMax) {
-  repMin = repMin || 8;
-  repMax = repMax || 12;
-  const sess = sessionsFor(exId);
-  if (!sess.length) return { typ: 'neu', text: 'Erstes Mal — Arbeitsgewicht finden' };
-  const last = sess[sess.length - 1];
-  const ws = workingSets(last.wex);
   const ex = exById(exId);
+  /* Zeit-/Strecken-Übungen (Plank, Farmer's Walk …): Wdh.-Feld enthält Sekunden/Meter —
+     die Wiederholungs-Logik würde Unsinn empfehlen. */
+  if (ex.hint) {
+    return {
+      typ: 'neu', text: 'Manuell steigern — ' + ex.hint,
+      grund: 'Diese Übung wird über Zeit bzw. Strecke gemessen (Eintrag im Wdh.-Feld). Die automatische Gewichts-/Wiederholungs-Logik greift hier bewusst nicht — steigere Dauer bzw. Strecke schrittweise um ~5–10 %.'
+    };
+  }
+  const coachAn = S.settings.coach !== false;
+  const k = Coach.info(ex);
+  repMin = repMin || (coachAn ? k.repMin : 8);
+  repMax = repMax || (coachAn ? k.repMax : 12);
+  const sess = sessionsFor(exId);
+  if (!sess.length) {
+    return {
+      typ: 'neu', text: 'Erstes Mal — Arbeitsgewicht für ' + repRangeText(repMin, repMax) + ' finden',
+      grund: coachAn ? ('Kategorie: ' + k.label + '. Empfohlener Zielbereich: ' + k.repMin + '–' + k.repMax + ' Wdh., Satzpause ~' + fmtMinSek(k.pause) + ' min. Wähle ein Gewicht, mit dem du das untere Ziel technisch sauber schaffst — gesteigert wird ab der nächsten Einheit automatisch.') : null
+    };
+  }
+  const ws = workingSets(sess[sess.length - 1].wex);
+  const wsDavor = sess.length > 1 ? workingSets(sess[sess.length - 2].wex) : null;
+  if (coachAn) return Coach.empfehlung(ex, ws, wsDavor, repMin, repMax);
+  /* Klassik-Modus (Coach aus): einfache Pauschalregel mit den Einstellungs-Werten */
   const inc = (ex.compound && (ex.mg === 'Beine' || ex.mg === 'Gesäß')) ? S.settings.incLower : S.settings.incUpper;
   const topKg = Math.max(...ws.map(s => s.kg || 0));
   if (ws.every(s => s.reps >= repMax)) {
     return { typ: 'plus', kg: topKg + inc, text: '+' + fmtKg(inc) + ' kg → ' + fmtKg(topKg + inc) + ' kg (' + repRangeText(repMin, repMax) + ')' };
   }
   if (ws.some(s => s.reps < repMin)) {
-    const prev = sess[sess.length - 2];
-    const prevBelow = prev && workingSets(prev.wex).some(s => s.reps < repMin);
+    const prevBelow = wsDavor && wsDavor.some(s => s.reps < repMin);
     if (prevBelow) {
-      const deload = Math.max(0, Math.round(topKg * 0.95 / 2.5) * 2.5);
-      return { typ: 'halten', kg: deload, text: 'Deload erwägen: −5 % ≈ ' + fmtKg(deload) + ' kg' };
+      const deload = Math.max(0, Math.min(topKg - 2.5, Math.round(topKg * 0.95 / 2.5) * 2.5));
+      if (deload > 0 && deload < topKg) {
+        return { typ: 'halten', kg: deload, text: 'Deload erwägen: ' + fmtKg(deload) + ' kg' };
+      }
     }
     return { typ: 'halten', kg: topKg, text: 'Gewicht halten: ' + fmtKg(topKg) + ' kg (' + repRangeText(repMin, repMax) + ')' };
   }
@@ -502,11 +526,13 @@ function renderExCard(wex, xi) {
     h += '<div class="lastmal">Noch keine früheren Einheiten.</div>';
   }
   const prog = progressionFor(wex.exId, wex.repMin, wex.repMax);
+  const warum = prog.grund ? ' <button class="linklike" style="font-size:13px" data-action="prog-warum" data-ex="' + xi + '">Warum?</button>' : '';
   if (prog.typ === 'neu') {
-    h += '<div class="prog-chip neutral">' + esc(prog.text) + '</div>';
+    h += '<div style="margin:0 0 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="prog-chip neutral" style="margin:0">' + esc(prog.text) + '</span>' + warum + '</div>';
   } else {
     const cls = prog.typ === 'plus' ? '' : (prog.typ === 'halten' ? 'halten' : 'neutral');
-    h += '<button class="prog-chip ' + cls + '" data-action="prog-apply" data-ex="' + xi + '" data-kg="' + prog.kg + '">' + esc(prog.text) + '</button>';
+    h += '<div style="margin:0 0 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+      '<button class="prog-chip ' + cls + '" style="margin:0" data-action="prog-apply" data-ex="' + xi + '" data-kg="' + prog.kg + '"' + (prog.reps ? ' data-reps="' + prog.reps + '"' : '') + '>' + esc(prog.text) + '</button>' + warum + '</div>';
   }
   h += '<div class="set-cols"><span></span><span>' + (ex.bw ? '+kg' : 'kg') + '</span><span>Wdh.</span><span>RPE</span><span>✓</span></div>';
   let wNum = 0;
@@ -1087,7 +1113,7 @@ function renderUebungDetail() {
   /* Übungs-Einstellungen */
   h += '<div class="section-title">Einstellungen</div>' +
     '<div class="setting-row"><div class="li-main"><div class="li-title" style="font-size:15px">Pausenziel</div>' +
-    '<div class="li-sub">leer = Standard (' + restDefault(ex.id) + ' s)</div></div>' +
+    '<div class="li-sub">leer = Standard (' + pauseStandard(ex.id) + ' s' + (S.settings.coach !== false ? ' · Coach: ' + esc(Coach.info(ex).label) : '') + ')</div></div>' +
     '<input class="input-mini" inputmode="numeric" placeholder="auto" value="' + (os.restSec || '') + '" data-exset="restSec" data-id="' + esc(ex.id) + '"><span class="li-sub">s</span></div>' +
     '<div class="form-row"><label>Notiz (z. B. Sitzeinstellung, Griffbreite)</label>' +
     '<textarea class="input" data-exset="notiz" data-id="' + esc(ex.id) + '">' + esc(os.notiz || '') + '</textarea></div>';
@@ -1209,10 +1235,15 @@ function renderDaten() {
     settingRow('Vibration', 'wo unterstützt (Android)',
       switchHtml('vibration', st.vibration));
   h += '<div class="section-title">Training</div>' +
-    settingRow('Pause Grundübung', 'Standard in Sekunden', miniInput('restCompound', st.restCompound)) +
-    settingRow('Pause Isolationsübung', 'Standard in Sekunden', miniInput('restIsolation', st.restIsolation)) +
-    settingRow('Steigerungsschritt', 'Oberkörper (kg)', miniInput('incUpper', fmtInput(st.incUpper))) +
-    settingRow('Steigerungsschritt', 'Beine/Gesäß-Grundübungen (kg)', miniInput('incLower', fmtInput(st.incLower)));
+    settingRow('Intelligenter Coach', 'Pausen, Steigerungen und Wdh.-Ziele je nach Übungstyp & Muskelgruppe (evidenzbasiert), mit RPE-Autoregulation und Deload-Logik', switchHtml('coach', st.coach !== false));
+  if (st.coach !== false) {
+    h += '<div class="info-box">Der Coach setzt die Standards automatisch — z. B. ~3:30 min Pause und ~5-%-Schritte bei Beine-Grundübungen, 1:30 min und kleinste Schritte bei Bizeps &amp; Co. Pro Plan oder pro Übung kannst du die Pause weiterhin manuell überschreiben. Im Training zeigt dir „Warum?" die Begründung jeder Empfehlung.</div>';
+  } else {
+    h += settingRow('Pause Grundübung', 'Standard in Sekunden', miniInput('restCompound', st.restCompound)) +
+      settingRow('Pause Isolationsübung', 'Standard in Sekunden', miniInput('restIsolation', st.restIsolation)) +
+      settingRow('Steigerungsschritt', 'Oberkörper (kg)', miniInput('incUpper', fmtInput(st.incUpper))) +
+      settingRow('Steigerungsschritt', 'Beine/Gesäß-Grundübungen (kg)', miniInput('incLower', fmtInput(st.incLower)));
+  }
   h += '<div class="section-title">Datenverwaltung</div>' +
     '<div class="info-box">Deine Daten liegen im Browser-Speicher <b>dieses Geräts</b> und hängen am Speicherort der App — die Kraftlog.app also nicht verschieben oder umbenennen. Zum Übertragen auf ein anderes Gerät (z. B. iPhone) und als Backup: Export → Import.' +
     (st.lastExport ? '<br>Letzter Export: ' + fmtDatumLang(st.lastExport) : '<br>Noch kein Export gemacht.') + '</div>' +
@@ -1949,12 +1980,31 @@ const ACTIONS = {
   'prog-apply': el => {
     const kg = parseNum(el.dataset.kg);
     if (kg == null) return;
+    const reps = el.dataset.reps ? parseInt(el.dataset.reps, 10) : null;
     S.activeWorkout.exercises[+el.dataset.ex].sets.forEach(s => {
-      if (s.done !== true && !s.warmup) s.kg = kg;
+      if (s.done !== true && !s.warmup) {
+        s.kg = kg;
+        if (reps) s.reps = reps;
+      }
     });
     save();
     render();
     showToast('Vorschlag übernommen');
+  },
+  'prog-warum': el => {
+    const wex = S.activeWorkout.exercises[+el.dataset.ex];
+    const ex = exById(wex.exId);
+    const prog = progressionFor(wex.exId, wex.repMin, wex.repMax);
+    const k = Coach.info(ex);
+    openSheet('<div class="sheet-title">Coach-Empfehlung</div>' +
+      '<div class="sheet-sub"><b>' + esc(ex.name) + '</b> · ' + esc(k.label) + '</div>' +
+      '<div class="info-box"><b>' + esc(prog.text) + '</b>' + (prog.grund ? '<br><br>' + esc(prog.grund) : '') + '</div>' +
+      '<div class="info-box">Satzpause: <b>' + fmtMinSek(restTarget(wex.exId, wex.restSec)) + ' min</b><br>' +
+      ((wex.restSec || (S.exerciseSettings[wex.exId] && S.exerciseSettings[wex.exId].restSec))
+        ? 'Von dir festgelegt (Plan- bzw. Übungs-Einstellung).'
+        : (S.settings.coach !== false ? esc(k.pauseGrund) : 'Pauschalwert aus den Einstellungen (Klassik-Modus).')) + '</div>' +
+      '<div class="mini-note">' + esc(Coach.QUELLEN) + '</div>' +
+      '<div class="sheet-actions"><button class="btn btn-primary" data-action="sheet-close">Alles klar</button></div>');
   },
   'set-add': el => {
     const wex = S.activeWorkout.exercises[+el.dataset.ex];
@@ -2443,6 +2493,7 @@ document.addEventListener('change', e => {
     if (k === 'theme') { S.settings.theme = el.value; applyTheme(); }
     else if (el.type === 'checkbox') S.settings[k] = el.checked;
     save();
+    if (k === 'coach') render(); // Klassik-Einstellungen ein-/ausblenden
     return;
   }
 });
