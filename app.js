@@ -78,6 +78,21 @@ function sanitizeState(s) {
     t.exercises = t.exercises.filter(it => it && it.exId).map(normalizeTplExercise);
   });
   s.customExercises = s.customExercises.filter(e => e && e.id && e.name);
+  /* Reparatur bekannter Import-Fehlklassifikationen: Übungen, die der frühere
+     Namens-Rater mangels Stichwort auf den Fallback 'Rücken' gesetzt hat.
+     Greift nur, solange die Übung noch auf 'Rücken' steht (manuelle Änderungen bleiben unangetastet). */
+  const REPARATUR = [
+    [/schienbein|tibialis/i, 'Waden'],
+    [/beinheben/i, 'Bauch/Core'],
+    [/brücke|bridge/i, 'Gesäß'],
+    [/dehnen|foam roll|mobilit|kreisen|pendeln|einbeinstand|eineinstand|hüftbeuger|wallsit|wall sit/i, 'Beine']
+  ];
+  s.customExercises.forEach(c => {
+    if (c.mg !== 'Rücken') return;
+    for (const r of REPARATUR) {
+      if (r[0].test(c.name)) { c.mg = r[1]; break; }
+    }
+  });
   s.bodyweight = s.bodyweight.filter(b => b && b.date && b.kg > 0);
   s.runs = s.runs.filter(r => r && r.distanzKm > 0 && r.dauerSec > 0 && typeof r.startedAt === 'number');
   const aw = s.activeWorkout;
@@ -1573,6 +1588,10 @@ function strongGuessMgEq(name) {
   let mg = 'Rücken';
   if (/reverse fly|rear delt/.test(n)) mg = 'Schultern';
   else if (/wallsit|wall sit/.test(n)) mg = 'Beine';
+  else if (/schienbein|tibialis/.test(n)) mg = 'Waden';
+  else if (/beinheben/.test(n)) mg = 'Bauch/Core';
+  else if (/brücke/.test(n)) mg = 'Gesäß';
+  else if (/dehnen|foam roll|mobilit|kreisen|pendeln|einbeinstand|eineinstand|hüftbeuger/.test(n)) mg = 'Beine';
   else if (/curl/.test(n) && !/leg|wrist|reverse/.test(n)) mg = 'Bizeps';
   else if (/tricep|skull|pushdown|extension/.test(n) && !/leg|back/.test(n)) mg = 'Trizeps';
   else if (/bench|chest|fly|push up|dip/.test(n)) mg = 'Brust';
