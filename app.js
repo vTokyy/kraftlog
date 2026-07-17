@@ -473,10 +473,10 @@ function render() {
   else v.innerHTML = renderDaten();
   renderTimerBar();
 }
-function warnHtml() {
+function warnHtml(mitExportHinweis) {
   if (readOnly) return '<div class="warn-banner">Diese Daten stammen aus einer neueren Kraftlog-Version. Änderungen werden nicht gespeichert — bitte zuerst in der neuen Version exportieren.</div>';
   if (!storageOk) return '<div class="warn-banner">Browser-Speicher nicht verfügbar — Daten gehen beim Schließen verloren. Regelmäßig exportieren!</div>';
-  if (exportOverdue()) return '<button class="warn-banner" style="display:block;width:100%;text-align:left" data-action="tab" data-tab="daten">Kein Export seit über 7 Tagen — jetzt sichern ›</button>';
+  if (mitExportHinweis && exportOverdue()) return '<div class="warn-banner">Kein Export seit über 7 Tagen — sichere deine Daten unten per Export.</div>';
   return '';
 }
 function exportOverdue() {
@@ -501,9 +501,13 @@ function renderStart() {
   const wpHeuteTpl = S.templates.find(t => t.id === S.wochenplan[heuteWpTag()]);
   const wpAktiv = WP_TAGE.some(t => S.templates.some(x => x.id === S.wochenplan[t]));
   if (wpHeuteTpl) {
+    const heuteErledigt = S.workouts.some(w => w.templateId === wpHeuteTpl.id && w.startedAt >= startOfDay(Date.now()));
     h += '<div class="card" style="display:flex;align-items:center;gap:10px">' +
       '<div class="li-main"><div class="li-sub">Heute laut Wochenplan</div><div class="li-title">' + esc(wpHeuteTpl.name) + '</div></div>' +
-      '<button class="btn btn-small btn-primary" data-action="wo-start" data-tpl="' + esc(wpHeuteTpl.id) + '">Start</button></div>';
+      (heuteErledigt
+        ? '<span class="tag" style="background:var(--green-soft);color:var(--green);font-size:14px;font-weight:800;padding:7px 13px;margin:0">Erledigt ✓</span>'
+        : '<button class="btn btn-small btn-primary" data-action="wo-start" data-tpl="' + esc(wpHeuteTpl.id) + '">Start</button>') +
+      '</div>';
   } else if (wpAktiv) {
     h += '<div class="card"><div class="li-sub" style="white-space:normal">Heute laut Wochenplan: <b>Ruhetag</b> — gute Erholung!</div></div>';
   }
@@ -673,7 +677,7 @@ function renderExCard(wex, xi) {
     const dis = done ? ' disabled' : '';
     const ds = ' data-ex="' + xi + '" data-set="' + si + '"';
     h += '<div class="set-row' + (done ? ' done' : '') + '">' +
-      '<button class="w-toggle' + (s.warmup ? ' on' : '') + '" data-action="warmup"' + ds + ' title="Aufwärmsatz umschalten">' + label + '</button>' +
+      '<button class="w-toggle' + (s.warmup ? ' on' : '') + '" data-action="set-optionen"' + ds + ' title="Satz-Optionen">' + label + '</button>' +
       '<div class="num-group">' +
       '<button class="step-btn" data-action="step" data-field="kg" data-dir="-1"' + ds + dis + '>−</button>' +
       '<input class="num-input" inputmode="decimal" autocomplete="off" placeholder="' + (ex.bw ? '+kg' : 'kg') + '" value="' + fmtInput(s.kg) + '" data-winput="kg"' + ds + dis + '>' +
@@ -1430,7 +1434,7 @@ function renderProfil() {
 /* ---------- View: Daten (Persönliches + Einstellungen) ---------- */
 function renderDaten() {
   const st = S.settings;
-  let h = '<h1 class="view-title">Daten</h1>' + warnHtml();
+  let h = '<h1 class="view-title">Daten</h1>' + warnHtml(true);
   /* Persönliche Daten */
   h += '<div class="section-title">Persönliche Daten</div>';
   h += '<div class="card chart-card"><h3>Körpergewicht</h3>';
@@ -2333,13 +2337,51 @@ const ACTIONS = {
     '<button class="btn" data-action="sheet-close">Abbrechen</button></div>'),
   'wo-discard-confirm': () => discardWorkout(),
   'check': el => checkSet(+el.dataset.ex, +el.dataset.set),
-  'warmup': el => {
+  'set-optionen': el => {
+    const aw = S.activeWorkout;
+    if (!aw) return;
+    const xi = +el.dataset.ex, si = +el.dataset.set;
+    const wex = aw.exercises[xi];
+    const s = wex.sets[si];
+    openSheet('<div class="sheet-title">' + esc(exById(wex.exId).name) + '</div>' +
+      '<div class="sheet-sub">Satz ' + (si + 1) + (s.warmup ? ' (Aufwärmsatz)' : '') + '</div>' +
+      '<div class="sheet-actions">' +
+      '<button class="btn" data-action="set-warmup" data-ex="' + xi + '" data-set="' + si + '">' +
+      (s.warmup ? 'Als Arbeitssatz markieren' : 'Als Aufwärmsatz markieren') + '</button>' +
+      '<button class="btn btn-danger" data-action="set-entfernen" data-ex="' + xi + '" data-set="' + si + '">Satz entfernen</button>' +
+      '<button class="btn" data-action="sheet-close">Abbrechen</button></div>');
+  },
+  'set-warmup': el => {
     const aw = S.activeWorkout;
     if (!aw) return;
     const s = aw.exercises[+el.dataset.ex].sets[+el.dataset.set];
     s.warmup = !s.warmup;
     save();
+    closeSheet();
     render();
+  },
+  'set-entfernen': el => {
+    const aw = S.activeWorkout;
+    if (!aw) return;
+    const xi = +el.dataset.ex, i = +el.dataset.set;
+    const wex = aw.exercises[xi];
+    wex.sets.splice(i, 1);
+    /* Pausen-Zeiger korrigieren */
+    if (aw.rest && aw.rest.exIdx === xi) {
+      if (aw.rest.setIdx === i) { aw.rest = null; Signal.restStop(); }
+      else if (aw.rest.setIdx > i) aw.rest.setIdx--;
+    }
+    if (!wex.sets.length) {
+      aw.exercises.splice(xi, 1);
+      if (aw.rest) {
+        if (aw.rest.exIdx === xi) { aw.rest = null; Signal.restStop(); }
+        else if (aw.rest.exIdx > xi) aw.rest.exIdx--;
+      }
+    }
+    save();
+    closeSheet();
+    render();
+    showToast('Satz entfernt');
   },
   'step': el => {
     const aw = S.activeWorkout;
