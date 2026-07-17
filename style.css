@@ -435,6 +435,23 @@ circle.chart-dot { stroke: var(--card); stroke-width: 1.5; }
 .li-selected { outline: 2px solid var(--blue); }
 .linklike { color: var(--blue); font-weight: 700; font-size: inherit; padding: 0; }
 
+/* Wochenplan: Volumen-Analyse */
+.vol-row { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: 11px 14px; margin-bottom: 8px; }
+.vol-kopf { display: flex; align-items: baseline; gap: 6px; }
+.vol-mg { font-weight: 700; font-size: 15px; flex: 1; }
+.vol-ist { font-weight: 800; font-size: 16px; font-variant-numeric: tabular-nums; }
+.vol-ziel { font-size: 12px; color: var(--text-2); }
+.vol-bar { position: relative; height: 10px; border-radius: 5px; background: var(--card-2); margin-top: 8px; overflow: hidden; }
+.vol-zone { position: absolute; top: 0; bottom: 0; background: var(--green-soft); }
+.vol-fill { position: absolute; top: 2px; bottom: 2px; left: 0; border-radius: 4px; min-width: 2px; }
+.vol-fill.s-ok { background: var(--green); }
+.vol-fill.s-wenig { background: var(--orange); }
+.vol-fill.s-viel { background: var(--red); }
+.vol-status { font-size: 12.5px; margin-top: 7px; font-weight: 600; line-height: 1.4; }
+.st-ok { color: var(--green); }
+.st-wenig { color: var(--orange); }
+.st-viel { color: var(--red); }
+
 @media (min-width: 561px) {
   #view { padding-top: calc(28px + var(--safe-top)); }
 }

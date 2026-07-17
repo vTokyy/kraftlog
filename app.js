@@ -27,6 +27,9 @@ const Icons = window.KraftlogIcons;
 const Coach = window.KraftlogCoach;
 const RPE_WERTE = ['6', '6.5', '7', '7.5', '8', '8.5', '9', '9.5', '10'];
 const TAG_MS = 86400000;
+const WP_TAGE = ['mo', 'di', 'mi', 'do', 'fr', 'sa', 'so'];
+const WP_LABEL = { mo: 'Montag', di: 'Dienstag', mi: 'Mittwoch', do: 'Donnerstag', fr: 'Freitag', sa: 'Samstag', so: 'Sonntag' };
+function heuteWpTag() { return WP_TAGE[(new Date().getDay() + 6) % 7]; }
 
 function esc(s) {
   return String(s == null ? '' : s)
@@ -51,6 +54,7 @@ function defaults() {
     customExercises: [],
     exerciseSettings: {},
     templates: [],
+    wochenplan: {},
     workouts: [],
     runs: [],
     activeWorkout: null,
@@ -66,6 +70,7 @@ function sanitizeState(s) {
   if (!Array.isArray(s.bodyweight)) s.bodyweight = d.bodyweight;
   if (!Array.isArray(s.runs)) s.runs = d.runs;
   if (!s.exerciseSettings || typeof s.exerciseSettings !== 'object' || Array.isArray(s.exerciseSettings)) s.exerciseSettings = d.exerciseSettings;
+  if (!s.wochenplan || typeof s.wochenplan !== 'object' || Array.isArray(s.wochenplan)) s.wochenplan = d.wochenplan;
   if (!s.settings || typeof s.settings !== 'object') s.settings = d.settings;
   s.workouts = s.workouts.filter(w => w && Array.isArray(w.exercises) && typeof w.startedAt === 'number');
   s.templates = s.templates.filter(t => t && Array.isArray(t.exercises));
@@ -472,9 +477,20 @@ function renderStart() {
   if (S.activeWorkout) return renderActiveWorkout();
   if (trainSub === 'plaene') return renderPlaene();
   if (trainSub === 'tpl-editor') return renderTplEditor();
+  if (trainSub === 'wochenplan') return renderWochenplan();
 
   const heute = new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
   let h = '<h1 class="view-title">Workout starten<small>' + esc(heute) + '</small></h1>' + warnHtml();
+  /* Heutiger Tag laut Wochenplan */
+  const wpHeuteTpl = S.templates.find(t => t.id === S.wochenplan[heuteWpTag()]);
+  const wpAktiv = WP_TAGE.some(t => S.templates.some(x => x.id === S.wochenplan[t]));
+  if (wpHeuteTpl) {
+    h += '<div class="card" style="display:flex;align-items:center;gap:10px">' +
+      '<div class="li-main"><div class="li-sub">Heute laut Wochenplan</div><div class="li-title">' + esc(wpHeuteTpl.name) + '</div></div>' +
+      '<button class="btn btn-small btn-primary" data-action="wo-start" data-tpl="' + esc(wpHeuteTpl.id) + '">Start</button></div>';
+  } else if (wpAktiv) {
+    h += '<div class="card"><div class="li-sub" style="white-space:normal">Heute laut Wochenplan: <b>Ruhetag</b> — gute Erholung!</div></div>';
+  }
   if (S.templates.length) h += '<div class="section-title">Meine Workouts</div>';
   h += '<div class="tpl-grid">';
   for (const tpl of S.templates) {
@@ -496,6 +512,100 @@ function renderStart() {
     h += '<div class="card" style="margin-top:12px"><div class="li-sub" style="white-space:normal">Noch keine eigenen Workouts. Lege dir unter „Pläne verwalten" Vorlagen an (z. B. Push / Pull / Beine) — dann startest du mit einem Tap und siehst pro Übung die Werte vom letzten Mal.</div></div>';
   }
   h += '<button class="btn btn-block" style="margin-top:12px" data-action="plaene">Pläne verwalten</button>';
+  const wpStatus = wochenplanStatus();
+  h += '<button class="btn btn-block" style="margin-top:10px" data-action="wochenplan">Wochenplan' +
+    (wpStatus.zugewiesen && wpStatus.warnungen ? ' <span class="tag" style="background:var(--orange-soft);color:var(--orange);margin:0 0 0 4px">' + wpStatus.warnungen + ' Hinweise</span>' : '') + '</button>';
+  return h;
+}
+
+/* ---------- Wochenplan + Volumen-Analyse ---------- */
+function saetzeVon(tpl) {
+  return tpl.exercises.reduce((a, it) => a + it.sets.filter(s => !s.warmup).length, 0);
+}
+function wochenplanVolumen() {
+  const vol = {};
+  for (const tag of WP_TAGE) {
+    const tpl = S.templates.find(t => t.id === S.wochenplan[tag]);
+    if (!tpl) continue;
+    tpl.exercises.forEach(it => {
+      const mg = exById(it.exId).mg;
+      vol[mg] = (vol[mg] || 0) + it.sets.filter(s => !s.warmup).length;
+    });
+  }
+  return vol;
+}
+function wochenplanStatus() {
+  const vol = wochenplanVolumen();
+  const zugewiesen = WP_TAGE.some(t => S.templates.some(x => x.id === S.wochenplan[t]));
+  const zeilen = MGS.map(mg => {
+    const z = Coach.VOLUMEN[mg] || { min: 0, max: 99, hinweis: '' };
+    const ist = vol[mg] || 0;
+    let status = 'ok', diff = 0;
+    if (z.min > 0 && ist < z.min) { status = 'wenig'; diff = z.min - ist; }
+    else if (ist > z.max) { status = 'viel'; diff = ist - z.max; }
+    return { mg, ist, z, status, diff };
+  });
+  return { zugewiesen, zeilen, warnungen: zugewiesen ? zeilen.filter(x => x.status !== 'ok').length : 0 };
+}
+function wpHinweis(mg, status) {
+  let best = null, bestN = -1, bestTag = null;
+  for (const tag of WP_TAGE) {
+    const tpl = S.templates.find(t => t.id === S.wochenplan[tag]);
+    if (!tpl) continue;
+    const n = tpl.exercises.reduce((a, it) => a + (exById(it.exId).mg === mg ? it.sets.filter(s => !s.warmup).length : 0), 0);
+    if (n > bestN) { bestN = n; best = tpl; bestTag = tag; }
+  }
+  if (!best) return '';
+  if (status === 'wenig') {
+    return bestN > 0
+      ? ' — z. B. in „' + esc(best.name) + '" (' + WP_LABEL[bestTag] + ') ergänzen'
+      : ' — z. B. in „' + esc(best.name) + '" (' + WP_LABEL[bestTag] + ') eine Übung dafür aufnehmen';
+  }
+  return bestN > 0 ? ' — z. B. in „' + esc(best.name) + '" (' + WP_LABEL[bestTag] + ') reduzieren' : '';
+}
+function volZeile(z) {
+  const skala = z.z.max * 1.35;
+  const fuellung = Math.min(100, z.ist / skala * 100);
+  const zoneL = z.z.min / skala * 100;
+  const zoneB = (z.z.max - z.z.min) / skala * 100;
+  const cls = z.status === 'ok' ? 's-ok' : (z.status === 'wenig' ? 's-wenig' : 's-viel');
+  let statusHtml;
+  if (z.status === 'wenig') {
+    statusHtml = '<div class="vol-status st-wenig">Zu wenig: +' + z.diff + ' ' + (z.diff === 1 ? 'Satz' : 'Sätze') + ' bis zum Optimum' + wpHinweis(z.mg, 'wenig') + '</div>';
+  } else if (z.status === 'viel') {
+    statusHtml = '<div class="vol-status st-viel">Zu viel: ' + z.diff + ' ' + (z.diff === 1 ? 'Satz' : 'Sätze') + ' über dem sinnvollen Maximum (Übertrainings-Risiko)' + wpHinweis(z.mg, 'viel') + '</div>';
+  } else if (z.ist === 0 && z.z.min === 0) {
+    statusHtml = '<div class="vol-status" style="color:var(--text-2)">Optional — nicht im Plan</div>';
+  } else {
+    statusHtml = '<div class="vol-status st-ok">Im optimalen Bereich</div>';
+  }
+  return '<div class="vol-row"><div class="vol-kopf"><span class="vol-mg">' + esc(z.mg) + '</span>' +
+    '<span class="vol-ist ' + (z.status === 'ok' ? '' : cls === 's-wenig' ? 'st-wenig' : 'st-viel') + '">' + z.ist + '</span>' +
+    '<span class="vol-ziel">/ ' + (z.z.min > 0 ? z.z.min + '–' + z.z.max : 'bis ' + z.z.max) + ' Sätze</span></div>' +
+    '<div class="vol-bar"><div class="vol-zone" style="left:' + zoneL.toFixed(1) + '%;width:' + zoneB.toFixed(1) + '%"></div>' +
+    '<div class="vol-fill ' + cls + '" style="width:' + fuellung.toFixed(1) + '%"></div></div>' +
+    statusHtml + '</div>';
+}
+function renderWochenplan() {
+  let h = '<button class="back-btn" data-action="train-home">‹ Training</button><h1 class="view-title">Wochenplan</h1>' +
+    '<div class="mini-note" style="margin:-8px 0 12px 2px">Tippe auf einen Tag, um ihm einen Plan zuzuweisen. Kein Plan = Ruhetag.</div>';
+  const heute = heuteWpTag();
+  for (const tag of WP_TAGE) {
+    const tpl = S.templates.find(t => t.id === S.wochenplan[tag]);
+    h += '<button class="li-item" style="min-height:52px" data-action="wp-tag" data-tag="' + tag + '">' +
+      '<div class="li-main"><div class="li-title" style="font-size:15px">' + WP_LABEL[tag] +
+      (tag === heute ? ' <span class="tag tag-lauf" style="margin-left:4px">heute</span>' : '') + '</div>' +
+      '<div class="li-sub">' + (tpl ? esc(tpl.name) : 'Ruhetag') + '</div></div>' +
+      (tpl ? '<span class="tag">' + saetzeVon(tpl) + ' Sätze</span>' : '') + '<span class="chev">›</span></button>';
+  }
+  const st = wochenplanStatus();
+  h += '<div class="section-title" style="display:flex;align-items:baseline;gap:10px">Volumen-Analyse (Sätze/Woche) ' +
+    '<button class="linklike" style="font-size:12px;text-transform:none;letter-spacing:0" data-action="wp-info">Wie wird gerechnet?</button></div>';
+  if (!st.zugewiesen) {
+    h += '<div class="card"><div class="li-sub" style="white-space:normal">Weise mindestens einem Tag einen Plan zu — dann prüfe ich dein Wochenvolumen pro Muskelgruppe gegen die optimalen Bereiche und warne bei zu wenig oder zu viel.</div></div>';
+  } else {
+    st.zeilen.forEach(z => { h += volZeile(z); });
+  }
   return h;
 }
 
@@ -1809,6 +1919,41 @@ const ACTIONS = {
   /* Training / Pläne */
   'train-home': () => { trainSub = null; tplDraft = null; planAuswahl = null; render(); },
   'plaene': () => { trainSub = 'plaene'; tplDraft = null; planAuswahl = null; render(); },
+
+  /* Wochenplan */
+  'wochenplan': () => { trainSub = 'wochenplan'; render(); window.scrollTo(0, 0); },
+  'wp-tag': el => {
+    const tag = el.dataset.tag;
+    if (!S.templates.length) { showToast('Lege zuerst einen Plan an'); return; }
+    let liste = '<button class="li-item" style="min-height:50px" data-action="wp-zuweisen" data-tag="' + tag + '">' +
+      '<div class="li-main"><div class="li-title" style="font-size:15px">Ruhetag</div><div class="li-sub">kein Training</div></div></button>';
+    S.templates.forEach(t => {
+      liste += '<button class="li-item" style="min-height:50px" data-action="wp-zuweisen" data-tag="' + tag + '" data-tpl="' + esc(t.id) + '">' +
+        '<div class="li-main"><div class="li-title" style="font-size:15px">' + esc(t.name) + '</div>' +
+        '<div class="li-sub">' + t.exercises.length + ' Übungen · ' + saetzeVon(t) + ' Arbeitssätze</div></div></button>';
+    });
+    openSheet('<div class="sheet-title">' + WP_LABEL[tag] + '</div><div class="sheet-sub">Plan für diesen Tag wählen:</div>' + liste);
+  },
+  'wp-zuweisen': el => {
+    if (el.dataset.tpl) S.wochenplan[el.dataset.tag] = el.dataset.tpl;
+    else delete S.wochenplan[el.dataset.tag];
+    save();
+    closeSheet();
+    render();
+  },
+  'wp-info': () => {
+    let tabelle = '';
+    MGS.forEach(mg => {
+      const z = Coach.VOLUMEN[mg];
+      tabelle += '<div class="hist-set" style="align-items:flex-start"><span class="hs-main" style="width:96px;flex-shrink:0">' + esc(mg) + '</span>' +
+        '<span class="hs-sub" style="white-space:normal">' + (z.min > 0 ? z.min + '–' + z.max : 'optional, bis ' + z.max) + ' Sätze/Woche — ' + esc(z.hinweis) + '</span></div>';
+    });
+    openSheet('<div class="sheet-title">So rechnet die Analyse</div>' +
+      '<div class="sheet-sub">Gezählt werden die <b>direkten Arbeitssätze</b> pro Muskelgruppe aus allen zugewiesenen Plänen einer Woche (Aufwärmsätze zählen nicht). Indirektes Volumen ist in den Zielbereichen bereits einkalkuliert — z. B. braucht der Trizeps wenig Direktvolumen, weil er beim Drücken mitarbeitet.</div>' +
+      '<div class="card" style="padding:10px 14px">' + tabelle + '</div>' +
+      '<div class="mini-note">Produktive Volumen-Bereiche für Hypertrophie (direkte Sätze/Woche). Grün = im Bereich, Orange = zu wenig, Rot = über dem sinnvollen Maximum.</div>' +
+      '<div class="sheet-actions"><button class="btn btn-primary" data-action="sheet-close">Alles klar</button></div>');
+  },
   'tpl-new': () => { tplDraft = { id: null, name: '', createdAt: null, exercises: [] }; trainSub = 'tpl-editor'; render(); },
   'tpl-edit': el => {
     const t = S.templates.find(x => x.id === el.dataset.id);

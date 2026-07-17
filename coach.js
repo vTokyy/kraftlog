@@ -140,5 +140,20 @@ window.KraftlogCoach = (function () {
 
   const QUELLEN = 'Regelwerk nach: Schoenfeld et al. 2016 & Grgic et al. 2017 (Satzpausen), ACSM Position Stand 2009 (Laststeigerung 2–10 %), Helms/Zourdos et al. 2016 (RPE/RIR-Autoregulation), Prinzip der doppelten Progression.';
 
-  return { kategorie, info, pauseFuer, repBereich, inkrement, empfehlung, QUELLEN };
+  /* Produktives Wochenvolumen (direkte Arbeitssätze/Woche, Hypertrophie).
+   * min 0 = optionale Gruppe (keine Zu-wenig-Warnung), nur Obergrenze wird geprüft. */
+  const VOLUMEN = {
+    'Brust':      { min: 12, max: 18, hinweis: 'Hauptbeweger beim Drücken — braucht kein Extra-Polster.' },
+    'Rücken':     { min: 14, max: 20, hinweis: 'Verträgt viel Volumen; verschiedene Zugrichtungen einbauen (vertikal + horizontal).' },
+    'Schultern':  { min: 12, max: 20, hinweis: 'Gilt für Seit- und hintere Schulter (erholen schnell); die vordere wird über das Drücken bereits stark abgedeckt.' },
+    'Bizeps':     { min: 10, max: 16, hinweis: 'Bekommt zusätzlich indirektes Volumen aus allem Ziehen und Rudern.' },
+    'Trizeps':    { min: 8,  max: 12, hinweis: 'Bekommt viel indirekt aus allem Drücken — wenig Direktvolumen nötig.' },
+    'Beine':      { min: 14, max: 26, hinweis: 'Kombinierter Bereich aus Quads (~10–18) und Beinbeugern (~8–14), da viele Übungen beides treffen. Stark ermüdend — auf knie- und hüftdominante Übungen aufteilen.' },
+    'Gesäß':      { min: 8,  max: 14, hinweis: 'Stark ermüdend; über hüftdominante Übungen (Hip Thrust, RDL) abdecken.' },
+    'Bauch/Core': { min: 10, max: 16, hinweis: 'Bekommt isometrisch etwas aus den Grundübungen mit.' },
+    'Waden':      { min: 0,  max: 16, hinweis: 'Optional — kein Pflichtziel. Wenn Waden ein Ziel sind: ~8–16 Sätze.' },
+    'Unterarme':  { min: 0,  max: 12, hinweis: 'Optional — bekommen viel indirekt aus Zug- und Halteübungen.' }
+  };
+
+  return { kategorie, info, pauseFuer, repBereich, inkrement, empfehlung, QUELLEN, VOLUMEN };
 })();
