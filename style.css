@@ -196,6 +196,16 @@ svg { display: block; }
 .tpl-box-sub { font-size: 12.5px; color: var(--text-2); }
 .tpl-box-cta { margin-top: auto; padding-top: 10px; color: var(--blue); font-weight: 700; font-size: 14px; }
 .tpl-box-lauf .tpl-box-cta { color: var(--green); }
+.tpl-wrap { position: relative; display: flex; }
+.tpl-wrap .tpl-box { flex: 1; }
+.tpl-wrap .tpl-box-name { padding-right: 30px; }
+.tpl-menu {
+  position: absolute; top: 7px; right: 7px; z-index: 1;
+  width: 32px; height: 32px; border-radius: 9px;
+  background: var(--card-2); color: var(--text-2);
+  font-size: 17px; font-weight: 800; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+}
 .stat-blau .stat-val { color: var(--blue); }
 
 /* ---------- Stat-Kacheln ---------- */

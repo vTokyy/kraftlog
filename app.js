@@ -491,15 +491,19 @@ function renderStart() {
   } else if (wpAktiv) {
     h += '<div class="card"><div class="li-sub" style="white-space:normal">Heute laut Wochenplan: <b>Ruhetag</b> — gute Erholung!</div></div>';
   }
-  if (S.templates.length) h += '<div class="section-title">Meine Workouts</div>';
+  h += '<div class="section-title" style="display:flex;align-items:baseline;gap:12px">Meine Workouts<span style="flex:1"></span>' +
+    '<button class="linklike" style="text-transform:none;letter-spacing:0;font-size:13px" data-action="tpl-new">+ Neu</button>' +
+    '<button class="linklike" style="text-transform:none;letter-spacing:0;font-size:13px" data-action="tpl-mehr">Mehr …</button></div>';
   h += '<div class="tpl-grid">';
   for (const tpl of S.templates) {
     const letzte = [...S.workouts].reverse().find(w => w.templateId === tpl.id);
-    h += '<button class="tpl-box" data-action="wo-start" data-tpl="' + esc(tpl.id) + '">' +
+    h += '<div class="tpl-wrap">' +
+      '<button class="tpl-box" data-action="wo-start" data-tpl="' + esc(tpl.id) + '">' +
       '<div class="tpl-box-name">' + esc(tpl.name) + '</div>' +
       '<div class="tpl-box-sub">' + tpl.exercises.length + ' Übungen</div>' +
       (letzte ? '<div class="tpl-box-sub">zuletzt ' + relTage(letzte.startedAt) + '</div>' : '') +
-      '<div class="tpl-box-cta">Starten ›</div></button>';
+      '<div class="tpl-box-cta">Starten ›</div></button>' +
+      '<button class="tpl-menu" data-action="tpl-menu" data-id="' + esc(tpl.id) + '" title="Plan-Optionen">⋯</button></div>';
   }
   h += '<button class="tpl-box" data-action="wo-start">' +
     '<div class="tpl-box-name">Freies Training</div><div class="tpl-box-sub">ohne Vorlage</div>' +
@@ -509,9 +513,8 @@ function renderStart() {
     '<div class="tpl-box-cta">Eintragen ›</div></button>';
   h += '</div>';
   if (!S.templates.length) {
-    h += '<div class="card" style="margin-top:12px"><div class="li-sub" style="white-space:normal">Noch keine eigenen Workouts. Lege dir unter „Pläne verwalten" Vorlagen an (z. B. Push / Pull / Beine) — dann startest du mit einem Tap und siehst pro Übung die Werte vom letzten Mal.</div></div>';
+    h += '<div class="card" style="margin-top:12px"><div class="li-sub" style="white-space:normal">Noch keine eigenen Workouts. Lege mit „+ Neu" Vorlagen an (z. B. Push / Pull / Beine) — dann startest du mit einem Tap und siehst pro Übung die Werte vom letzten Mal.</div></div>';
   }
-  h += '<button class="btn btn-block" style="margin-top:12px" data-action="plaene">Pläne verwalten</button>';
   const wpStatus = wochenplanStatus();
   h += '<button class="btn btn-block" style="margin-top:10px" data-action="wochenplan">Wochenplan' +
     (wpStatus.zugewiesen && wpStatus.warnungen ? ' <span class="tag" style="background:var(--orange-soft);color:var(--orange);margin:0 0 0 4px">' + wpStatus.warnungen + ' Hinweise</span>' : '') + '</button>';
@@ -584,7 +587,8 @@ function volZeile(z) {
     '<span class="vol-ziel">/ ' + (z.z.min > 0 ? z.z.min + '–' + z.z.max : 'bis ' + z.z.max) + ' Sätze</span></div>' +
     '<div class="vol-bar"><div class="vol-zone" style="left:' + zoneL.toFixed(1) + '%;width:' + zoneB.toFixed(1) + '%"></div>' +
     '<div class="vol-fill ' + cls + '" style="width:' + fuellung.toFixed(1) + '%"></div></div>' +
-    statusHtml + '</div>';
+    statusHtml +
+    '<button class="linklike" style="font-size:12.5px;margin-top:6px" data-action="wp-detail" data-mg="' + esc(z.mg) + '">Zusammensetzung anzeigen</button></div>';
 }
 function renderWochenplan() {
   let h = '<button class="back-btn" data-action="train-home">‹ Training</button><h1 class="view-title">Wochenplan</h1>' +
@@ -901,7 +905,7 @@ function renderPlaene() {
 }
 function renderTplEditor() {
   const d = tplDraft;
-  let h = '<button class="back-btn" data-action="plaene">‹ Pläne</button>' +
+  let h = '<button class="back-btn" data-action="train-home">‹ Zurück</button>' +
     '<h1 class="view-title" style="font-size:24px">' + (d.id ? 'Plan bearbeiten' : 'Neuer Plan') + '</h1>' +
     '<div class="form-row"><label>Name</label><input class="input" value="' + esc(d.name) + '" placeholder="z. B. Push A" data-tinput="name"></div>' +
     '<div class="section-title">Übungen</div>';
@@ -1941,6 +1945,30 @@ const ACTIONS = {
     closeSheet();
     render();
   },
+  'wp-detail': el => {
+    const mg = el.dataset.mg;
+    let inhalt = '', gesamt = 0;
+    for (const tag of WP_TAGE) {
+      const tpl = S.templates.find(t => t.id === S.wochenplan[tag]);
+      if (!tpl) continue;
+      const teile = tpl.exercises
+        .map(it => ({ ex: exById(it.exId), n: it.sets.filter(s => !s.warmup).length }))
+        .filter(x => x.ex.mg === mg && x.n > 0);
+      if (!teile.length) continue;
+      inhalt += '<div class="hist-ex-name">' + WP_LABEL[tag] + ' · ' + esc(tpl.name) + '</div>';
+      teile.forEach(x => {
+        inhalt += '<div class="hist-set"><span class="hs-main" style="flex:1;font-size:14px">' + esc(x.ex.name) + '</span>' +
+          '<span class="hs-sub">' + x.n + ' ' + (x.n === 1 ? 'Satz' : 'Sätze') + '</span></div>';
+        gesamt += x.n;
+      });
+    }
+    const z = Coach.VOLUMEN[mg] || { min: 0, max: 99 };
+    openSheet('<div class="sheet-title">' + esc(mg) + ' — Zusammensetzung</div>' +
+      '<div class="sheet-sub">' + gesamt + ' direkte Arbeitssätze pro Woche · Ziel: ' + (z.min > 0 ? z.min + '–' + z.max : 'bis ' + z.max) + '</div>' +
+      (inhalt ? '<div class="card" style="padding:10px 14px">' + inhalt + '</div>'
+        : '<div class="empty"><p>Keine Übungen dieser Muskelgruppe im Wochenplan.</p></div>') +
+      '<div class="sheet-actions"><button class="btn btn-primary" data-action="sheet-close">Fertig</button></div>');
+  },
   'wp-info': () => {
     let tabelle = '';
     MGS.forEach(mg => {
@@ -1960,7 +1988,71 @@ const ACTIONS = {
     if (!t) return;
     tplDraft = JSON.parse(JSON.stringify(t));
     trainSub = 'tpl-editor';
+    closeSheet();
     render();
+    window.scrollTo(0, 0);
+  },
+  'tpl-menu': el => {
+    const t = S.templates.find(x => x.id === el.dataset.id);
+    if (!t) return;
+    openSheet('<div class="sheet-title">' + esc(t.name) + '</div>' +
+      '<div class="sheet-sub">' + t.exercises.length + ' Übungen · ' + saetzeVon(t) + ' Arbeitssätze</div>' +
+      '<div class="sheet-actions">' +
+      '<button class="btn btn-primary" data-action="tpl-edit" data-id="' + esc(t.id) + '">Bearbeiten</button>' +
+      '<button class="btn" data-action="tpl-single-dup" data-id="' + esc(t.id) + '">Duplizieren</button>' +
+      '<button class="btn" data-action="tpl-single-export" data-id="' + esc(t.id) + '">Exportieren (teilen)</button>' +
+      '<button class="btn btn-danger" data-action="tpl-single-del" data-id="' + esc(t.id) + '">Löschen</button></div>');
+  },
+  'tpl-single-dup': el => {
+    const t = S.templates.find(x => x.id === el.dataset.id);
+    if (!t) return;
+    const kopie = JSON.parse(JSON.stringify(t));
+    kopie.id = 't-' + Date.now() + '-k1';
+    kopie.name = t.name + ' Kopie';
+    kopie.createdAt = Date.now();
+    S.templates.push(kopie);
+    save();
+    closeSheet();
+    render();
+    showToast('„' + kopie.name + '" angelegt');
+  },
+  'tpl-single-export': el => {
+    closeSheet();
+    exportPlaene([el.dataset.id]);
+  },
+  'tpl-single-del': el => {
+    const t = S.templates.find(x => x.id === el.dataset.id);
+    if (!t) return;
+    openSheet('<div class="sheet-title">„' + esc(t.name) + '" löschen?</div>' +
+      '<div class="sheet-sub">Deine Trainings im Verlauf bleiben erhalten.</div>' +
+      '<div class="sheet-actions"><button class="btn btn-danger" data-action="tpl-single-del-confirm" data-id="' + esc(t.id) + '">Löschen</button>' +
+      '<button class="btn" data-action="sheet-close">Abbrechen</button></div>');
+  },
+  'tpl-single-del-confirm': el => {
+    S.templates = S.templates.filter(x => x.id !== el.dataset.id);
+    save();
+    closeSheet();
+    render();
+    showToast('Plan gelöscht');
+  },
+  'tpl-mehr': () => openSheet('<div class="sheet-title">Pläne</div><div class="sheet-actions">' +
+    '<button class="btn" data-action="plaene-auswahl">Mehrere auswählen (löschen / exportieren / duplizieren)</button>' +
+    '<button class="btn" data-action="tpl-import-open">Pläne importieren…</button>' +
+    (S.workouts.length ? '<button class="btn" data-action="tpl-derive-sheet">Pläne aus dem Verlauf erstellen</button>' : '') +
+    '</div>'),
+  'plaene-auswahl': () => {
+    trainSub = 'plaene';
+    tplDraft = null;
+    planAuswahl = new Set();
+    closeSheet();
+    render();
+  },
+  'tpl-derive-sheet': () => {
+    closeSheet();
+    const erg = erstellePlaeneAus(S.workouts);
+    save();
+    render();
+    plaeneErgebnisSheet(erg);
   },
   'tpl-add-ex': () => openExercisePicker(id => {
     tplDraft.exercises.push({ exId: id, restSec: null, sets: [{ reps: 10 }, { reps: 10 }, { reps: 10 }] });
@@ -2028,7 +2120,7 @@ const ACTIONS = {
     }
     save();
     tplDraft = null;
-    trainSub = 'plaene';
+    trainSub = null;
     render();
     showToast('Plan gespeichert');
   },
@@ -2039,7 +2131,7 @@ const ACTIONS = {
     S.templates = S.templates.filter(t => t.id !== tplDraft.id);
     save();
     tplDraft = null;
-    trainSub = 'plaene';
+    trainSub = null;
     closeSheet();
     render();
   },
