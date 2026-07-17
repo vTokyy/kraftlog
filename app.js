@@ -46,6 +46,7 @@ function defaults() {
     schemaVersion: SCHEMA_VERSION,
     settings: {
       theme: 'auto', sound: true, vibration: true,
+      benachrichtigung: true,
       coach: true,
       restCompound: 180, restIsolation: 90,
       incUpper: 2.5, incLower: 5, lastExport: null,
@@ -771,7 +772,7 @@ function checkSet(xi, si) {
   if (s.done === true) {          // wieder aufmachen
     s.done = false;
     s.doneAt = null;
-    if (aw.rest && aw.rest.exIdx === xi && aw.rest.setIdx === si) aw.rest = null;
+    if (aw.rest && aw.rest.exIdx === xi && aw.rest.setIdx === si) { aw.rest = null; Signal.restStop(); }
     delete s.pr;
     save();
     render();
@@ -784,6 +785,7 @@ function checkSet(xi, si) {
     else { showToast('Bitte Gewicht eintragen'); return; }
   }
   Signal.unlock();               // Audio in dieser Nutzer-Geste entsperren (iOS)
+  notifyErlaubnisAnfragen();     // Benachrichtigungs-Erlaubnis ebenfalls in der Geste
   const now = Date.now();
   /* Laufende Pause finalisieren (Fallback: bis zum nächsten ✓, enthält dann die Satzausführung) */
   if (aw.rest) {
@@ -808,6 +810,7 @@ function checkSet(xi, si) {
   }
   /* Pause starten */
   aw.rest = { startedAt: now, targetSec: restTarget(wex.exId, wex.restSec), exIdx: xi, setIdx: si, signaled: false };
+  if (S.settings.sound) Signal.restStart();   // stille Schleife hält die App im Hintergrund wach
   save();
   render();
 }
@@ -832,6 +835,7 @@ function finishWorkout() {
   S.workouts.push(w);
   S.workouts.sort((a, b) => a.startedAt - b.startedAt);
   S.activeWorkout = null;
+  Signal.restStop();
   save();
   closeSheet();
   showToast('Training gespeichert');
@@ -839,13 +843,106 @@ function finishWorkout() {
   verlaufSub = { id: w.id };
   render();
   window.scrollTo(0, 0);
+  /* Weicht das Training vom Plan ab? → fragen, ob der Plan aktualisiert werden soll */
+  const tpl = w.templateId ? S.templates.find(t => t.id === w.templateId) : null;
+  if (tpl) {
+    const diff = planUpdateDiff(tpl, w);
+    if (diff.struktur || diff.werte) {
+      planUpdate = { tplId: tpl.id, workoutId: w.id };
+      openSheet('<div class="sheet-title">Plan „' + esc(tpl.name) + '" aktualisieren?</div>' +
+        '<div class="sheet-sub">Dein heutiges Training weicht vom Plan ab' +
+        (diff.struktur ? ' — auch bei Übungen bzw. Satzanzahl.' : ' — bei Wiederholungen/Gewichten.') + '</div>' +
+        '<div class="sheet-actions">' +
+        (diff.struktur ? '<button class="btn btn-primary" data-action="pu-struktur">Struktur &amp; Werte übernehmen</button>' : '') +
+        '<button class="btn' + (diff.struktur ? '' : ' btn-primary') + '" data-action="pu-werte">Nur Werte übernehmen (Wdh./Gewichte)</button>' +
+        '<button class="btn" data-action="pu-keep">Plan so lassen</button></div>');
+    }
+  }
 }
 function discardWorkout() {
   S.activeWorkout = null;
+  Signal.restStop();
   save();
   closeSheet();
   render();
   showToast('Training verworfen');
+}
+
+/* --- Plan nach dem Training aktualisieren --- */
+let planUpdate = null;
+function planUpdateDiff(tpl, w) {
+  const tplStruct = tpl.exercises.map(it => it.exId + ':' + it.sets.filter(s => !s.warmup).length).join('|');
+  const woStruct = w.exercises.map(e => e.exId + ':' + e.sets.filter(s => !s.warmup).length).join('|');
+  const struktur = tplStruct !== woStruct;
+  let werte = false;
+  tpl.exercises.forEach(it => {
+    const wex = w.exercises.find(e => e.exId === it.exId);
+    if (!wex) return;
+    const arbeit = wex.sets.filter(s => !s.warmup);
+    let ai = 0;
+    it.sets.forEach(st => {
+      if (st.warmup) return;
+      const s2 = arbeit[ai++];
+      if (!s2) return;
+      if (st.reps != null && s2.reps !== st.reps) werte = true;
+      if (st.kg != null && s2.kg !== st.kg) werte = true;
+    });
+  });
+  return { struktur, werte };
+}
+/* Wdh. (und kg nur dort, wo der Plan bereits explizite Gewichte hatte) übernehmen */
+function tplWerteUpdate(tpl, w) {
+  tpl.exercises.forEach(it => {
+    const wex = w.exercises.find(e => e.exId === it.exId);
+    if (!wex) return;
+    const arbeit = wex.sets.filter(s => !s.warmup);
+    let ai = 0;
+    it.sets.forEach(st => {
+      if (st.warmup) return;
+      const s2 = arbeit[ai++];
+      if (!s2) return;
+      st.reps = s2.reps;
+      if (st.kg != null) st.kg = s2.kg;
+    });
+  });
+}
+/* Übungen, Reihenfolge und Sätze wie im heutigen Training; Pausen-Overrides bleiben erhalten */
+function tplStrukturUpdate(tpl, w) {
+  tpl.exercises = w.exercises.map(wex => {
+    const alt = tpl.exercises.find(e => e.exId === wex.exId);
+    return {
+      exId: wex.exId,
+      restSec: alt ? alt.restSec : null,
+      sets: wex.sets.map(s => s.warmup
+        ? { warmup: true, kg: s.kg != null ? s.kg : 0, reps: s.reps }
+        : { reps: s.reps })
+    };
+  });
+}
+
+/* --- Benachrichtigung am Pausenende --- */
+function notifyErlaubnisAnfragen() {
+  if (S.settings.benachrichtigung === false) return;
+  if (!('Notification' in window)) return;
+  if (Notification.permission === 'default') {
+    try { Notification.requestPermission(); } catch (e) { }
+  }
+}
+function einfacheNotification(opts) {
+  try { new Notification('Kraftlog', opts); } catch (e) { }
+}
+function notifyPause() {
+  if (S.settings.benachrichtigung === false) return;
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const opts = { body: 'Pause vorbei — weiter geht\'s!', tag: 'kraftlog-pause' };
+  if (navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
+    navigator.serviceWorker.getRegistration().then(reg => {
+      if (reg && reg.showNotification) reg.showNotification('Kraftlog', opts);
+      else einfacheNotification(opts);
+    }).catch(() => einfacheNotification(opts));
+  } else {
+    einfacheNotification(opts);
+  }
 }
 
 /* --- Pausen-Timer (rein timestampbasiert) --- */
@@ -859,14 +956,20 @@ function renderTimerBar() {
   const over = el >= t;
   bar.classList.toggle('over', over);
   $('#timer-progress').style.width = Math.min(100, el / t * 100) + '%';
+  const gesamt = ' · Training ' + fmtDauer((Date.now() - aw.startedAt) / 1000);
   $('#timer-text').innerHTML = over
-    ? 'Pause vorbei <small>+' + fmtMinSek(el - t) + ' · Ziel ' + fmtMinSek(t) + '</small>'
-    : fmtMinSek(t - el) + ' <small>Pause · Ziel ' + fmtMinSek(t) + '</small>';
+    ? 'Pause vorbei <small>+' + fmtMinSek(el - t) + gesamt + '</small>'
+    : fmtMinSek(t - el) + ' <small>Ziel ' + fmtMinSek(t) + gesamt + '</small>';
   if (over && !aw.rest.signaled) {
     aw.rest.signaled = true;
     save();
-    if (S.settings.sound) Signal.beep();
+    if (S.settings.sound) {
+      Signal.beep();       // Vordergrund (WebAudio)
+      Signal.beepLaut();   // Hintergrund/gesperrt (Audio-Element)
+    }
     if (S.settings.vibration) Signal.vibrate();
+    notifyPause();
+    Signal.restStop();     // stille Schleife beenden — Signal ist raus
   }
 }
 function endRest(exakt) {
@@ -878,6 +981,7 @@ function endRest(exakt) {
     if (rs && rs.restSec == null) rs.restSec = Math.round((Date.now() - aw.rest.startedAt) / 1000);
   }
   aw.rest = null;
+  Signal.restStop();
   save();
   render();
 }
@@ -1359,8 +1463,10 @@ function renderDaten() {
       '<select data-set="theme">' +
       [['auto', 'Automatisch'], ['hell', 'Hell'], ['dunkel', 'Dunkel']].map(o =>
         '<option value="' + o[0] + '"' + (st.theme === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>') +
-    settingRow('Ton', 'Piepton am Pausenende',
+    settingRow('Ton', 'Piepton am Pausenende — hält die App während der Pause im Hintergrund wach (leise Audio-Session)',
       switchHtml('sound', st.sound)) +
+    settingRow('Benachrichtigung', 'Systemmeldung am Pausenende; die Erlaubnis fragt dein Gerät beim ersten abgehakten Satz ab',
+      switchHtml('benachrichtigung', st.benachrichtigung !== false)) +
     settingRow('Vibration', 'wo unterstützt (Android)',
       switchHtml('vibration', st.vibration));
   h += '<div class="section-title">Training</div>' +
@@ -2205,6 +2311,23 @@ const ACTIONS = {
       '<button class="btn" data-action="sheet-close">Weiter trainieren</button></div>');
   },
   'wo-finish-confirm': () => finishWorkout(),
+  'pu-keep': () => { planUpdate = null; closeSheet(); },
+  'pu-werte': () => {
+    if (!planUpdate) { closeSheet(); return; }
+    const tpl = S.templates.find(t => t.id === planUpdate.tplId);
+    const w = S.workouts.find(x => x.id === planUpdate.workoutId);
+    if (tpl && w) { tplWerteUpdate(tpl, w); save(); showToast('Plan-Werte aktualisiert'); }
+    planUpdate = null;
+    closeSheet();
+  },
+  'pu-struktur': () => {
+    if (!planUpdate) { closeSheet(); return; }
+    const tpl = S.templates.find(t => t.id === planUpdate.tplId);
+    const w = S.workouts.find(x => x.id === planUpdate.workoutId);
+    if (tpl && w) { tplStrukturUpdate(tpl, w); save(); showToast('Plan komplett aktualisiert'); }
+    planUpdate = null;
+    closeSheet();
+  },
   'wo-discard': () => openSheet('<div class="sheet-title">Training verwerfen?</div><div class="sheet-sub">Alle Eingaben dieses Trainings gehen verloren.</div>' +
     '<div class="sheet-actions"><button class="btn btn-danger" data-action="wo-discard-confirm">Verwerfen</button>' +
     '<button class="btn" data-action="sheet-close">Abbrechen</button></div>'),
