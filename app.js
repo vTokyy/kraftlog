@@ -456,6 +456,7 @@ let tab = 'start';
 let trainSub = null;     // null | 'plaene' | 'tpl-editor'
 let tplDraft = null;     // Arbeitskopie im Vorlagen-Editor
 let planAuswahl = null;  // Set von Plan-IDs im Auswahlmodus (null = normal)
+let zeigeWorkout = true; // false = laufendes Training ist minimiert (Start zeigt die normale Übersicht)
 let uebSub = null;       // null | { exId }
 let uebFilter = { q: '', mg: null, eq: null };
 let verlaufSub = null;   // null | { id }
@@ -472,6 +473,14 @@ function render() {
   else if (tab === 'uebungen') v.innerHTML = renderUebungen();
   else v.innerHTML = renderDaten();
   renderTimerBar();
+  /* Schwebender Rücksprung zum laufenden (minimierten) Training */
+  const rs = $('#wo-ruecksprung');
+  if (S.activeWorkout && !(tab === 'start' && zeigeWorkout)) {
+    rs.classList.remove('hidden');
+    rs.textContent = '‹ Zurück zum Training · ' + fmtDauer((Date.now() - S.activeWorkout.startedAt) / 1000);
+  } else {
+    rs.classList.add('hidden');
+  }
 }
 function warnHtml(mitExportHinweis) {
   if (readOnly) return '<div class="warn-banner">Diese Daten stammen aus einer neueren Kraftlog-Version. Änderungen werden nicht gespeichert — bitte zuerst in der neuen Version exportieren.</div>';
@@ -490,7 +499,7 @@ function chartCard(title, inner) {
 
 /* ---------- View: Start (Workout beginnen) ---------- */
 function renderStart() {
-  if (S.activeWorkout) return renderActiveWorkout();
+  if (S.activeWorkout && zeigeWorkout) return renderActiveWorkout();
   if (trainSub === 'plaene') return renderPlaene();
   if (trainSub === 'tpl-editor') return renderTplEditor();
   if (trainSub === 'wochenplan') return renderWochenplan();
@@ -636,7 +645,9 @@ function renderWochenplan() {
 /* --- Aktives Workout --- */
 function renderActiveWorkout() {
   const aw = S.activeWorkout;
-  let h = '<div class="wo-header"><div class="wo-name"><h2>' + esc(aw.name) + '</h2>' +
+  let h = '<div class="wo-header">' +
+    '<button class="btn btn-small" data-action="wo-minimieren" title="Training minimieren">‹</button>' +
+    '<div class="wo-name"><h2>' + esc(aw.name) + '</h2>' +
     '<div class="wo-elapsed" id="wo-elapsed">' + fmtDauer((Date.now() - aw.startedAt) / 1000) + '</div></div>' +
     '<button class="btn btn-small" data-action="wo-menu">⋯</button>' +
     '<button class="btn btn-small btn-green" data-action="wo-finish">Fertig</button></div>';
@@ -647,8 +658,13 @@ function renderActiveWorkout() {
 }
 function renderExCard(wex, xi) {
   const ex = exById(wex.exId);
-  let h = '<div class="ex-card"><div class="ex-head">' + Icons.thumb(ex) + '<div class="ex-title">' + esc(ex.name) + '</div><span class="tag">' + esc(ex.mg) + '</span></div>';
+  let h = '<div class="ex-card"><div class="ex-head">' + Icons.thumb(ex) + '<div class="ex-title">' + esc(ex.name) + '</div>' +
+    '<button class="linklike" style="font-size:12.5px;flex-shrink:0" data-action="wo-ex-notiz" data-ex="' + xi + '">Notiz</button>' +
+    '<span class="tag" style="margin-right:0">' + esc(ex.mg) + '</span></div>';
   if (ex.hint) h += '<div class="ex-hint">' + esc(ex.hint) + '</div>';
+  if (wex.notiz) h += '<div class="mini-note" style="margin:3px 0 4px">Notiz: ' + esc(wex.notiz) + '</div>';
+  const dauerNotiz = (S.exerciseSettings[wex.exId] || {}).notiz;
+  if (dauerNotiz) h += '<div class="mini-note" style="margin:3px 0 4px">Übungs-Notiz: ' + esc(dauerNotiz) + '</div>';
   const last = lastSessionFor(wex.exId);
   if (last) {
     const ws = workingSets(last.wex);
@@ -694,8 +710,9 @@ function renderExCard(wex, xi) {
       setInfoLine(s) +
       '</div>';
   });
-  h += '<div style="display:flex;gap:14px"><button class="add-set-btn" data-action="set-add" data-ex="' + xi + '">+ Satz</button>' +
-    '<button class="add-set-btn" style="color:var(--text-2)" data-action="set-del" data-ex="' + xi + '">− Satz</button></div>';
+  h += '<div style="display:flex;gap:14px;flex-wrap:wrap"><button class="add-set-btn" data-action="set-add" data-ex="' + xi + '">+ Satz</button>' +
+    '<button class="add-set-btn" style="color:var(--text-2)" data-action="set-del" data-ex="' + xi + '">− Satz</button>' +
+    '<button class="add-set-btn tpl-warmup-btn" data-action="wo-warmup" data-ex="' + xi + '">Aufwärmen berechnen</button></div>';
   return h + '</div>';
 }
 function setInfoLine(s) {
@@ -752,7 +769,7 @@ function buildWoExercise(exId, tplSets, restSec) {
     exId,
     repMin: repWerte.length ? Math.min(...repWerte) : null,
     repMax: repWerte.length ? Math.max(...repWerte) : null,
-    restSec: restSec || null, sets
+    restSec: restSec || null, notiz: null, sets
   };
 }
 function startWorkout(tplId) {
@@ -764,6 +781,7 @@ function startWorkout(tplId) {
   S.activeWorkout = aw;
   trainSub = null;
   tab = 'start';
+  zeigeWorkout = true;
   save();
   render();
   window.scrollTo(0, 0);
@@ -827,7 +845,7 @@ function finishWorkout() {
       kg: s.kg, reps: s.reps, rpe: s.rpe || null, warmup: !!s.warmup, doneAt: s.doneAt,
       restSec: s.restSec != null ? s.restSec : null
     }));
-    if (sets.length) cleaned.push({ exId: wex.exId, repMin: wex.repMin, repMax: wex.repMax, sets });
+    if (sets.length) cleaned.push({ exId: wex.exId, repMin: wex.repMin, repMax: wex.repMax, notiz: wex.notiz || '', sets });
   }
   /* Dauer deckeln: wird ein liegengebliebenes Training erst Stunden später beendet,
      zählt der letzte abgehakte Satz (+ Puffer) als Ende, nicht "jetzt". */
@@ -952,9 +970,15 @@ function notifyPause() {
 /* --- Pausen-Timer (rein timestampbasiert) --- */
 function renderTimerBar() {
   const bar = $('#timer-bar');
+  const rs = $('#wo-ruecksprung');
   const aw = S.activeWorkout;
-  if (!aw || !aw.rest) { bar.classList.add('hidden'); return; }
+  if (!aw || !aw.rest) {
+    bar.classList.add('hidden');
+    if (rs) rs.style.bottom = 'calc(64px + env(safe-area-inset-bottom))';
+    return;
+  }
   bar.classList.remove('hidden');
+  if (rs) rs.style.bottom = 'calc(132px + env(safe-area-inset-bottom))';
   const el = (Date.now() - aw.rest.startedAt) / 1000;
   const t = aw.rest.targetSec;
   const over = el >= t;
@@ -1179,6 +1203,7 @@ function renderWorkoutDetail() {
     const ex = exById(wex.exId);
     if (i) h += '<div class="divider"></div>';
     h += '<div class="hist-ex-name">' + esc(ex.name) + '</div>';
+    if (wex.notiz) h += '<div class="mini-note" style="margin:0 0 4px">Notiz: ' + esc(wex.notiz) + '</div>';
     let n = 0;
     wex.sets.forEach(s => {
       if (!s.warmup) n++;
@@ -2272,7 +2297,6 @@ const ACTIONS = {
     if (!aw) return;
     openSheet('<div class="sheet-title">' + esc(aw.name) + '</div><div class="sheet-actions">' +
       '<button class="btn" data-action="wo-add-ex">+ Übung hinzufügen</button>' +
-      '<button class="btn" data-action="wo-note">Notiz ' + (aw.notiz ? 'bearbeiten' : 'hinzufügen') + '</button>' +
       '<button class="btn btn-danger" data-action="wo-discard">Training verwerfen</button></div>');
   },
   'wo-add-ex': () => {
@@ -2459,6 +2483,64 @@ const ACTIONS = {
       }
     }
     showToast('Alle Sätze sind bereits abgehakt');
+  },
+  'wo-minimieren': () => { zeigeWorkout = false; render(); window.scrollTo(0, 0); },
+  'wo-zurueck': () => { tab = 'start'; zeigeWorkout = true; trainSub = null; closeSheet(); render(); window.scrollTo(0, 0); },
+  'wo-ex-notiz': el => {
+    const wex = S.activeWorkout.exercises[+el.dataset.ex];
+    openSheet('<div class="sheet-title">Notiz — ' + esc(exById(wex.exId).name) + '</div>' +
+      '<div class="sheet-sub">Gilt für diese Übung in diesem Training und wird im Verlauf gespeichert.</div>' +
+      '<textarea class="input" id="wo-exnotiz-text" placeholder="z. B. Sitz auf Stufe 4, Schulter leicht gezwickt …">' + esc(wex.notiz || '') + '</textarea>' +
+      '<div class="sheet-actions"><button class="btn btn-primary" data-action="wo-ex-notiz-save" data-ex="' + el.dataset.ex + '">Speichern</button></div>');
+  },
+  'wo-ex-notiz-save': el => {
+    const wex = S.activeWorkout.exercises[+el.dataset.ex];
+    wex.notiz = $('#wo-exnotiz-text').value.trim();
+    save();
+    closeSheet();
+    render();
+  },
+  'wo-warmup': el => {
+    const aw = S.activeWorkout;
+    if (!aw) return;
+    const xi = +el.dataset.ex;
+    const wex = aw.exercises[xi];
+    const ex = exById(wex.exId);
+    /* Vorschlag: erstes eingetragenes Arbeitsgewicht, sonst Top-Satz vom letzten Mal */
+    const ersterArbeit = wex.sets.find(s => !s.warmup && s.kg != null);
+    const last = lastSessionFor(wex.exId);
+    const top = last ? topSet(workingSets(last.wex)) : null;
+    const vorschlag = ersterArbeit ? fmtInput(ersterArbeit.kg) : (top && top.kg > 0 ? fmtInput(top.kg) : '');
+    openSheet('<div class="sheet-title">Aufwärmsätze berechnen</div>' +
+      '<div class="sheet-sub">für <b>' + esc(ex.name) + '</b> — die Aufwärmsätze werden vor deine Arbeitssätze eingefügt.</div>' +
+      '<div class="form-row"><label>Arbeitsgewicht (kg)</label>' +
+      '<input class="input" id="wu-kg" inputmode="decimal" placeholder="z. B. 100" value="' + vorschlag + '" data-ex="' + esc(wex.exId) + '"></div>' +
+      '<div id="wu-preview">' + warmupPreviewHtml(wex.exId, parseNum(vorschlag)) + '</div>' +
+      '<div class="sheet-actions"><button class="btn btn-primary" data-action="wo-wu-apply" data-ex="' + xi + '">Einfügen</button></div>');
+  },
+  'wo-wu-apply': el => {
+    const aw = S.activeWorkout;
+    if (!aw) return;
+    const xi = +el.dataset.ex;
+    const wex = aw.exercises[xi];
+    const target = parseNum($('#wu-kg').value);
+    if (!(target > 0)) { showToast('Bitte ein Arbeitsgewicht eingeben'); return; }
+    const warm = computeWarmup(target, exById(wex.exId));
+    if (!warm.length) { showToast('Kein Aufwärmen nötig — Gewicht zu leicht'); return; }
+    /* Pausen-Zeiger über Objekt-Identität retten, dann nicht abgehakte Warmups ersetzen */
+    const restSet = (aw.rest && aw.rest.exIdx === xi) ? wex.sets[aw.rest.setIdx] : null;
+    wex.sets = wex.sets.filter(s => s.done === true || !s.warmup);
+    const neu = warm.map(w2 => ({ kg: w2.kg, reps: w2.reps, rpe: null, warmup: true, done: false, doneAt: null, restSec: null }));
+    wex.sets = neu.concat(wex.sets);
+    if (restSet) {
+      const ni = wex.sets.indexOf(restSet);
+      if (ni >= 0) aw.rest.setIdx = ni;
+      else { aw.rest = null; Signal.restStop(); }
+    }
+    save();
+    closeSheet();
+    render();
+    showToast(neu.length + ' Aufwärmsätze eingefügt');
   },
   'rest-done': () => endRest(true),
   'rest-skip': () => endRest(false),
@@ -2934,6 +3016,10 @@ function tick() {
   renderTimerBar();
   const el = $('#wo-elapsed');
   if (el && S.activeWorkout) el.textContent = fmtDauer((Date.now() - S.activeWorkout.startedAt) / 1000);
+  const rs = $('#wo-ruecksprung');
+  if (rs && !rs.classList.contains('hidden') && S.activeWorkout) {
+    rs.textContent = '‹ Zurück zum Training · ' + fmtDauer((Date.now() - S.activeWorkout.startedAt) / 1000);
+  }
 }
 function maybeResumePrompt() {
   const aw = S.activeWorkout;
