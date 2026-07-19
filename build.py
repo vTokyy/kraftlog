@@ -86,8 +86,11 @@ def build_artifact():
     rest = re.findall(r'(?:src|href)="(?!#|data:)[^"]+"', html)
     if rest:
         sys.exit(f'FEHLER: verbleibende src/href-Referenzen: {rest}')
+    # Erlaubt: XML-Namespaces sowie reine Navigations-/Anleitungstexte (keine Ressourcen-Loads)
+    ERLAUBT = ('http://www.w3.org/', 'https://www.strava.com/', 'https://strava.com',
+               'https://vtokyy.github.io', 'https://dash.cloudflare.com', 'https://kraftlog-strava')
     extern = [u for u in re.findall(r'https?://[^\s"\'<>]+', html)
-              if not u.startswith('http://www.w3.org/')]  # XML-Namespaces sind keine Requests
+              if not u.startswith(ERLAUBT) and '.workers.dev' not in u]
     if extern:
         sys.exit(f'FEHLER: externe URLs gefunden (CSP!): {extern[:5]}')
 
