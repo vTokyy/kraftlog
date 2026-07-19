@@ -54,6 +54,12 @@ Einmalige Neu-Erzeugung der Mac-App (falls Kraftlog.app gelöscht wurde):
    Nein — der Pfad bleibt gleich, die Daten bleiben erhalten, solange
    der Pfad ~/Desktop/Kraftlog.app identisch ist.)
 
+Strava-Anbindung (optional):
+  Kraftlog kann beendete Workouts/Läufe automatisch auf Strava posten.
+  Da Strava keine direkten Browser-Zugriffe erlaubt, läuft ein Mini-Proxy
+  unter deinem eigenen kostenlosen Cloudflare-Account: Code + Anleitung
+  in strava-proxy.js (oder in der App: Daten → Strava → Anleitung).
+
 Datensicherheit:
   - „Mehr" → Export regelmäßig nutzen (die App erinnert nach 7 Tagen).
   - Vor jedem Import legt die App automatisch ein Backup an

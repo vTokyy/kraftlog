@@ -50,7 +50,8 @@ function defaults() {
       coach: true,
       restCompound: 180, restIsolation: 90,
       incUpper: 2.5, incLower: 5, lastExport: null,
-      groesseCm: null
+      groesseCm: null,
+      strava: { workerUrl: '', clientId: '', refreshToken: null, accessToken: null, accessBis: 0, athlet: '', autoPost: true }
     },
     customExercises: [],
     exerciseSettings: {},
@@ -73,6 +74,9 @@ function sanitizeState(s) {
   if (!s.exerciseSettings || typeof s.exerciseSettings !== 'object' || Array.isArray(s.exerciseSettings)) s.exerciseSettings = d.exerciseSettings;
   if (!s.wochenplan || typeof s.wochenplan !== 'object' || Array.isArray(s.wochenplan)) s.wochenplan = d.wochenplan;
   if (!s.settings || typeof s.settings !== 'object') s.settings = d.settings;
+  s.settings.strava = (s.settings.strava && typeof s.settings.strava === 'object')
+    ? Object.assign({}, d.settings.strava, s.settings.strava)
+    : d.settings.strava;
   s.workouts = s.workouts.filter(w => w && Array.isArray(w.exercises) && typeof w.startedAt === 'number');
   s.templates = s.templates.filter(t => t && Array.isArray(t.exercises));
   s.templates.forEach(t => {
@@ -865,6 +869,7 @@ function finishWorkout() {
   verlaufSub = { id: w.id };
   render();
   window.scrollTo(0, 0);
+  if (stravaVerbunden() && S.settings.strava.autoPost !== false) stravaPosteWorkout(w.id, true);
   /* Weicht das Training vom Plan ab? → fragen, ob der Plan aktualisiert werden soll */
   const tpl = w.templateId ? S.templates.find(t => t.id === w.templateId) : null;
   if (tpl) {
@@ -1184,6 +1189,7 @@ function openRunSheet(runId) {
     '<div class="form-row"><label>Dauer (mm:ss)</label><input class="input" id="run-dauer" placeholder="z. B. 28:30" value="' + (r ? fmtDauerColon(r.dauerSec) : '') + '"></div></div>' +
     '<div class="form-row"><label>Notiz (optional)</label><input class="input" id="run-notiz" placeholder="z. B. Intervalle, Strecke" value="' + esc(r && r.notiz ? r.notiz : '') + '"></div>' +
     '<div class="sheet-actions"><button class="btn btn-primary" data-action="run-save"' + (r ? ' data-id="' + esc(r.id) + '"' : '') + '>Speichern</button>' +
+    (r && stravaVerbunden() && !r.stravaId ? '<button class="btn" data-action="strava-post-run" data-id="' + esc(r.id) + '">Auf Strava posten</button>' : '') +
     (r ? '<button class="btn btn-danger" data-action="run-del" data-id="' + esc(r.id) + '">Löschen</button>' : '') + '</div>');
 }
 function renderWorkoutDetail() {
@@ -1216,6 +1222,11 @@ function renderWorkoutDetail() {
   });
   h += '</div>';
   if (w.notiz) h += '<div class="info-box">Notiz: ' + esc(w.notiz) + '</div>';
+  if (stravaVerbunden()) {
+    h += w.stravaId
+      ? '<div class="mini-note" style="margin-bottom:8px">Auf Strava gepostet ✓</div>'
+      : '<button class="btn btn-block" style="margin-bottom:10px" data-action="strava-post-wo" data-id="' + esc(w.id) + '">Auf Strava posten</button>';
+  }
   h += '<div class="row-2" style="margin-top:6px"><button class="btn" data-action="wo-edit">Bearbeiten</button>' +
     '<button class="btn btn-danger" data-action="wo-delete">Löschen</button></div>';
   return h;
@@ -1507,6 +1518,21 @@ function renderDaten() {
       settingRow('Pause Isolationsübung', 'Standard in Sekunden', miniInput('restIsolation', st.restIsolation)) +
       settingRow('Steigerungsschritt', 'Oberkörper (kg)', miniInput('incUpper', fmtInput(st.incUpper))) +
       settingRow('Steigerungsschritt', 'Beine/Gesäß-Grundübungen (kg)', miniInput('incLower', fmtInput(st.incLower)));
+  }
+  /* Strava */
+  h += '<div class="section-title">Strava</div>';
+  const stv = st.strava;
+  if (stravaVerbunden()) {
+    h += settingRow('Verbunden' + (stv.athlet ? ' als ' + stv.athlet : ''), 'Beendete Workouts und Läufe werden gepostet',
+      '<span class="tag" style="background:var(--green-soft);color:var(--green);margin:0">Aktiv</span>') +
+      settingRow('Automatisch posten', 'nach jedem beendeten Training', switchHtml('stravaAuto', stv.autoPost !== false)) +
+      '<button class="btn btn-block" data-action="strava-trennen">Strava trennen</button>';
+  } else {
+    h += '<div class="info-box">Poste beendete Workouts automatisch als „Krafttraining"-Aktivität auf Strava (Läufe als Lauf). Einmalige Einrichtung über deinen eigenen kostenlosen Cloudflare-Worker — Anleitung unten.</div>' +
+      '<div class="form-row"><label>Worker-URL</label><input class="input" placeholder="https://kraftlog-strava.….workers.dev" value="' + esc(stv.workerUrl || '') + '" data-sinput="workerUrl" autocapitalize="off" autocorrect="off"></div>' +
+      '<div class="form-row"><label>Strava Client-ID</label><input class="input" inputmode="numeric" placeholder="z. B. 123456" value="' + esc(stv.clientId || '') + '" data-sinput="clientId"></div>' +
+      '<div class="row-2"><button class="btn btn-primary" data-action="strava-verbinden">Mit Strava verbinden</button>' +
+      '<button class="btn" data-action="strava-hilfe">Anleitung</button></div>';
   }
   h += '<div class="section-title">Datenverwaltung</div>' +
     '<div class="info-box">Deine Daten liegen im Browser-Speicher <b>dieses Geräts</b> und hängen am Speicherort der App — die Kraftlog.app also nicht verschieben oder umbenennen. Zum Übertragen auf ein anderes Gerät (z. B. iPhone) und als Backup: Export → Import.' +
@@ -2060,6 +2086,115 @@ function importStrongCsv(text, standardEinheit, modus, originalNamen) {
     (nUebersprungen ? '<br>' + nUebersprungen + ' bereits vorhandene übersprungen' : '') +
     '<br>Vorherige Daten wurden als Backup gesichert.</div>' +
     '<div class="sheet-actions"><button class="btn btn-primary" data-action="sheet-close">Fertig</button></div>');
+}
+
+/* ---------- Strava-Anbindung (über eigenen Cloudflare-Worker-Proxy) ---------- */
+function stravaVerbunden() {
+  const st = S.settings.strava;
+  return !!(st && st.refreshToken && st.workerUrl);
+}
+function stravaWorker(pfad) {
+  return S.settings.strava.workerUrl.replace(/\/+$/, '') + pfad;
+}
+function isoLokal(ms) {
+  const d = new Date(ms);
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+async function stravaToken(body) {
+  const st = S.settings.strava;
+  const r = await fetch(stravaWorker('/token'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  const d = await r.json();
+  if (!r.ok || !d.access_token) throw new Error(d.message || 'Token-Fehler (' + r.status + ')');
+  st.accessToken = d.access_token;
+  st.accessBis = (d.expires_at || 0) * 1000;
+  if (d.refresh_token) st.refreshToken = d.refresh_token;
+  if (d.athlete) st.athlet = ((d.athlete.firstname || '') + ' ' + (d.athlete.lastname || '')).trim();
+  save();
+}
+async function stravaAccess() {
+  const st = S.settings.strava;
+  if (st.accessToken && st.accessBis > Date.now() + 60000) return st.accessToken;
+  await stravaToken({ refresh_token: st.refreshToken });
+  return st.accessToken;
+}
+async function stravaAktivitaet(daten) {
+  const token = await stravaAccess();
+  const r = await fetch(stravaWorker('/activities'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+    body: JSON.stringify(daten)
+  });
+  const d = await r.json();
+  if (!r.ok || !d.id) throw new Error(d.message || 'Strava-Fehler (' + r.status + ')');
+  return d.id;
+}
+function stravaBeschreibung(w) {
+  const zeilen = w.exercises.map(wex => {
+    const ws = workingSets(wex);
+    const t = topSet(ws);
+    return exById(wex.exId).name + ': ' + ws.length + (ws.length === 1 ? ' Satz' : ' Sätze') + (t && t.kg > 0 ? ' · Top ' + fmtKg(t.kg) + ' kg × ' + t.reps : '');
+  });
+  const prs = allPrEvents().filter(ev => ev.w.id === w.id).length;
+  let text = zeilen.join('\n') + '\nVolumen: ' + fmtVol(workoutVolume(w));
+  if (prs) text += '\n' + prs + ' neue Bestleistung' + (prs > 1 ? 'en' : '');
+  return (text + '\n\nGetrackt mit Kraftlog').slice(0, 1900);
+}
+async function stravaPosteWorkout(wId, leise) {
+  const w = S.workouts.find(x => x.id === wId);
+  if (!w || w.stravaId || !stravaVerbunden()) return;
+  try {
+    const id = await stravaAktivitaet({
+      name: w.name,
+      sport_type: 'WeightTraining',
+      start_date_local: isoLokal(w.startedAt),
+      elapsed_time: Math.max(60, Math.round(((w.finishedAt || w.startedAt + 3600000) - w.startedAt) / 1000)),
+      description: stravaBeschreibung(w)
+    });
+    w.stravaId = id;
+    save();
+    render();
+    showToast('Auf Strava gepostet');
+  } catch (e) {
+    if (!leise) showToast('Strava: ' + e.message + ' — später im Verlauf erneut versuchen');
+  }
+}
+async function stravaPosteLauf(rId, leise) {
+  const r = S.runs.find(x => x.id === rId);
+  if (!r || r.stravaId || !stravaVerbunden()) return;
+  try {
+    const id = await stravaAktivitaet({
+      name: r.notiz || 'Lauf',
+      sport_type: 'Run',
+      start_date_local: isoLokal(r.startedAt),
+      elapsed_time: Math.round(r.dauerSec),
+      distance: Math.round(r.distanzKm * 1000),
+      description: 'Getrackt mit Kraftlog'
+    });
+    r.stravaId = id;
+    save();
+    render();
+    showToast('Lauf auf Strava gepostet');
+  } catch (e) {
+    if (!leise) showToast('Strava: ' + e.message);
+  }
+}
+/* Rückkehr aus der Strava-Freigabe (?code=…) */
+function stravaOAuthRueckkehr() {
+  const m = location.search.match(/[?&]code=([^&]+)/);
+  if (!m) return;
+  const code = decodeURIComponent(m[1]);
+  try { history.replaceState(null, '', location.pathname); } catch (e) { }
+  if (!S.settings.strava.workerUrl) return;
+  stravaToken({ code }).then(() => {
+    tab = 'daten';
+    render();
+    showToast('Mit Strava verbunden' + (S.settings.strava.athlet ? ' als ' + S.settings.strava.athlet : ''));
+  }).catch(e => showToast('Strava-Verbindung fehlgeschlagen: ' + e.message));
 }
 
 /* ---------- Theme ---------- */
@@ -2680,17 +2815,20 @@ const ACTIONS = {
     if (!date || !km || km <= 0 || !dauer) { showToast('Bitte Datum, Distanz und Dauer angeben'); return; }
     const startedAt = new Date(date + 'T12:00').getTime();
     const notiz = $('#run-notiz').value.trim();
+    let neuId = null;
     if (el.dataset.id) {
       const r = S.runs.find(x => x.id === el.dataset.id);
       if (r) Object.assign(r, { startedAt, distanzKm: km, dauerSec: dauer, notiz });
     } else {
-      S.runs.push({ id: 'r-' + Date.now(), startedAt, distanzKm: km, dauerSec: dauer, notiz });
+      neuId = 'r-' + Date.now();
+      S.runs.push({ id: neuId, startedAt, distanzKm: km, dauerSec: dauer, notiz });
     }
     S.runs.sort((a, b) => a.startedAt - b.startedAt);
     save();
     closeSheet();
     render();
     showToast('Lauf gespeichert: ' + fmtKg(km) + ' km');
+    if (neuId && stravaVerbunden() && S.settings.strava.autoPost !== false) stravaPosteLauf(neuId, true);
   },
   'run-del': el => {
     S.runs = S.runs.filter(r => r.id !== el.dataset.id);
@@ -2863,6 +3001,31 @@ const ACTIONS = {
     render();
     showToast('Backup wiederhergestellt');
   },
+  /* Strava */
+  'strava-verbinden': () => {
+    const st = S.settings.strava;
+    if (!st.workerUrl || !st.clientId) { showToast('Bitte zuerst Worker-URL und Client-ID eintragen'); return; }
+    if (!/^https:\/\//.test(st.workerUrl) && location.protocol === 'https:') { showToast('Die Worker-URL muss mit https:// beginnen'); return; }
+    const redirect = location.origin + location.pathname;
+    location.href = 'https://www.strava.com/oauth/authorize?client_id=' + encodeURIComponent(st.clientId) +
+      '&response_type=code&redirect_uri=' + encodeURIComponent(redirect) +
+      '&approval_prompt=auto&scope=activity:write,read';
+  },
+  'strava-trennen': () => {
+    Object.assign(S.settings.strava, { refreshToken: null, accessToken: null, accessBis: 0, athlet: '' });
+    save();
+    render();
+    showToast('Strava getrennt');
+  },
+  'strava-hilfe': () => openSheet('<div class="sheet-title">Strava einrichten</div>' +
+    '<div class="sheet-sub">Einmalig, ca. 5 Minuten. Strava erlaubt keine direkten Browser-Zugriffe — deshalb läuft ein Mini-Vermittler unter deinem eigenen kostenlosen Cloudflare-Account (dein Client-Secret bleibt dort, nie im Browser).</div>' +
+    '<div class="info-box"><b>1. Strava-API-App anlegen</b><br>strava.com/settings/api → Anwendung erstellen: Name „Kraftlog", Website https://vtokyy.github.io, Autorisierungs-Callback-Domain: <b>vtokyy.github.io</b>. Danach Client-ID und Client-Secret notieren.</div>' +
+    '<div class="info-box"><b>2. Cloudflare Worker anlegen</b><br>dash.cloudflare.com (kostenloser Account) → Workers &amp; Pages → Create Worker → Deploy → „Edit code" → den Inhalt der Datei <b>strava-proxy.js</b> aus dem Kraftlog-GitHub-Repo (github.com/vTokyy/kraftlog) einfügen → Deploy. Dann unter Settings → Variables: <b>STRAVA_CLIENT_ID</b> (Text) und <b>STRAVA_CLIENT_SECRET</b> (Secret) eintragen.</div>' +
+    '<div class="info-box"><b>3. Verbinden</b><br>Worker-URL (https://….workers.dev) und Client-ID hier eintragen → „Mit Strava verbinden" → bei Strava freigeben. Fertig — ab dann wird jedes beendete Training automatisch gepostet.</div>' +
+    '<div class="sheet-actions"><button class="btn btn-primary" data-action="sheet-close">Alles klar</button></div>'),
+  'strava-post-wo': el => stravaPosteWorkout(el.dataset.id, false),
+  'strava-post-run': el => { closeSheet(); stravaPosteLauf(el.dataset.id, false); },
+
   'wipe': () => openSheet('<div class="sheet-title">Alle Daten löschen?</div>' +
     '<div class="sheet-sub">Alle Trainings, Pläne und Einstellungen werden entfernt. Das lässt sich nicht rückgängig machen — vorher exportieren!</div>' +
     '<div class="sheet-actions"><button class="btn btn-danger" data-action="wipe-confirm">Ja, endgültig löschen</button>' +
@@ -2950,6 +3113,12 @@ document.addEventListener('input', e => {
     else if (k === 'rest') s.restSec = v != null ? Math.round(v) : null;
     return;
   }
+  /* Strava-Zugangsdaten */
+  if (el.dataset.sinput) {
+    S.settings.strava[el.dataset.sinput] = el.value.trim();
+    saveSoon();
+    return;
+  }
   /* Übungs-Einstellungen */
   if (el.dataset.exset) {
     const id = el.dataset.id;
@@ -2994,6 +3163,7 @@ document.addEventListener('change', e => {
   if (el.dataset.set) {
     const k = el.dataset.set;
     if (k === 'theme') { S.settings.theme = el.value; applyTheme(); }
+    else if (k === 'stravaAuto') S.settings.strava.autoPost = el.checked;
     else if (el.type === 'checkbox') S.settings[k] = el.checked;
     save();
     if (k === 'coach') render(); // Klassik-Einstellungen ein-/ausblenden
@@ -3039,6 +3209,7 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') {
 
 applyTheme();
 render();
+stravaOAuthRueckkehr();
 maybeResumePrompt();
 setInterval(tick, 500);
 document.addEventListener('visibilitychange', () => {
