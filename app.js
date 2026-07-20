@@ -52,7 +52,8 @@ function defaults() {
       restCompound: 180, restIsolation: 90,
       incUpper: 2.5, incLower: 5, lastExport: null,
       groesseCm: null,
-      strava: { workerUrl: '', clientId: '', refreshToken: null, accessToken: null, accessBis: 0, athlet: '', autoPost: true }
+      strava: { workerUrl: '', clientId: '', refreshToken: null, accessToken: null, accessBis: 0, athlet: '', autoPost: true },
+      push: { aktiv: false, sub: null }
     },
     customExercises: [],
     exerciseSettings: {},
@@ -78,6 +79,9 @@ function sanitizeState(s) {
   s.settings.strava = (s.settings.strava && typeof s.settings.strava === 'object')
     ? Object.assign({}, d.settings.strava, s.settings.strava)
     : d.settings.strava;
+  s.settings.push = (s.settings.push && typeof s.settings.push === 'object')
+    ? Object.assign({}, d.settings.push, s.settings.push)
+    : d.settings.push;
   s.workouts = s.workouts.filter(w => w && Array.isArray(w.exercises) && typeof w.startedAt === 'number');
   s.templates = s.templates.filter(t => t && Array.isArray(t.exercises));
   s.templates.forEach(t => {
@@ -838,6 +842,7 @@ function checkSet(xi, si) {
   /* Pause starten */
   aw.rest = { startedAt: now, targetSec: restTarget(wex.exId, wex.restSec), exIdx: xi, setIdx: si, signaled: false };
   pauseWach();   // Wake Lock (Standard) bzw. stille Schleife (Opt-in "Signal bei gesperrtem Handy")
+  pushPlanen(aw.rest.targetSec);   // Weckruf über den Worker (falls Pausen-Push aktiv)
   save();
   render();
 }
@@ -972,6 +977,35 @@ function pauseWach() {
 function pauseWachEnde() {
   Signal.restStop();
   wakeLockAus();
+  pushStorno();
+}
+
+/* --- Pausen-Push: Weckruf über den Worker (klingelt auch gesperrt, Musik läuft weiter) --- */
+function pushAktiv() {
+  const p = S.settings.push;
+  return !!(p && p.aktiv && p.sub && S.settings.strava.workerUrl);
+}
+function pushPlanen(delaySec) {
+  if (!pushAktiv() || !navigator.onLine || !(delaySec > 0)) return;
+  fetch(stravaWorker('/push/planen'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ subscription: S.settings.push.sub, delaySec: Math.round(delaySec) })
+  }).catch(() => { });
+}
+function pushStorno() {
+  if (!pushAktiv()) return;
+  fetch(stravaWorker('/push/stornieren'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ subscription: S.settings.push.sub })
+  }).catch(() => { });
+}
+function b64urlZuBytes(s) {
+  const b = atob(s.replace(/-/g, '+').replace(/_/g, '/'));
+  const out = new Uint8Array(b.length);
+  for (let i = 0; i < b.length; i++) out[i] = b.charCodeAt(i);
+  return out;
 }
 
 /* --- Benachrichtigung am Pausenende --- */
@@ -1562,6 +1596,16 @@ function renderDaten() {
       '<div class="form-row"><label>Strava Client-ID</label><input class="input" inputmode="numeric" placeholder="z. B. 123456" value="' + esc(stv.clientId || '') + '" data-sinput="clientId"></div>' +
       '<div class="row-2"><button class="btn btn-primary" data-action="strava-verbinden">Mit Strava verbinden</button>' +
       '<button class="btn" data-action="strava-hilfe">Anleitung</button></div>';
+  }
+  /* Pausen-Push */
+  h += '<div class="section-title">Pausen-Push</div>';
+  if (S.settings.push.aktiv) {
+    h += settingRow('Pausen-Push aktiv', 'Am Pausenende klingelt eine Push-Nachricht — auch bei gesperrtem Handy, ohne deine Musik zu stoppen. Braucht kurz Internet beim Abhaken.',
+      '<span class="tag" style="background:var(--green-soft);color:var(--green);margin:0">Aktiv</span>') +
+      '<button class="btn btn-block" data-action="push-aus">Pausen-Push deaktivieren</button>';
+  } else {
+    h += '<div class="info-box">Push-Weckruf am Pausenende: klingelt auch bei gesperrtem Handy oder in anderer App — und deine Musik läuft ungestört weiter. Nutzt denselben Cloudflare-Worker wie Strava (Worker-URL oben eintragen). Nur in der installierten App (Home-Bildschirm) möglich.</div>' +
+      '<button class="btn btn-block btn-primary" data-action="push-aktivieren">Pausen-Push aktivieren</button>';
   }
   h += '<div class="section-title">Datenverwaltung</div>' +
     '<div class="info-box">Deine Daten liegen im Browser-Speicher <b>dieses Geräts</b> und hängen am Speicherort der App — die Kraftlog.app also nicht verschieben oder umbenennen. Zum Übertragen auf ein anderes Gerät (z. B. iPhone) und als Backup: Export → Import.' +
@@ -2713,6 +2757,7 @@ const ACTIONS = {
     if (!aw || !aw.rest) return;
     aw.rest.targetSec += 30;
     if ((Date.now() - aw.rest.startedAt) / 1000 < aw.rest.targetSec) aw.rest.signaled = false;
+    pushPlanen((aw.rest.startedAt + aw.rest.targetSec * 1000 - Date.now()) / 1000);
     save();
     renderTimerBar();
   },
@@ -3052,6 +3097,44 @@ const ACTIONS = {
     '<div class="info-box"><b>2. Cloudflare Worker anlegen</b><br>dash.cloudflare.com (kostenloser Account) → Workers &amp; Pages → Create Worker → Deploy → „Edit code" → den Inhalt der Datei <b>strava-proxy.js</b> aus dem Kraftlog-GitHub-Repo (github.com/vTokyy/kraftlog) einfügen → Deploy. Dann unter Settings → Variables: <b>STRAVA_CLIENT_ID</b> (Text) und <b>STRAVA_CLIENT_SECRET</b> (Secret) eintragen.</div>' +
     '<div class="info-box"><b>3. Verbinden</b><br>Worker-URL (https://….workers.dev) und Client-ID hier eintragen → „Mit Strava verbinden" → bei Strava freigeben. Fertig — ab dann wird jedes beendete Training automatisch gepostet.</div>' +
     '<div class="sheet-actions"><button class="btn btn-primary" data-action="sheet-close">Alles klar</button></div>'),
+  'push-aktivieren': async () => {
+    const st = S.settings.strava;
+    if (!st.workerUrl) { showToast('Bitte zuerst die Worker-URL (Strava-Bereich) eintragen'); return; }
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || location.protocol !== 'https:') {
+      showToast('Push geht nur in der installierten App (Home-Bildschirm)');
+      return;
+    }
+    try {
+      const erlaubnis = await Notification.requestPermission();
+      if (erlaubnis !== 'granted') { showToast('Benachrichtigungen wurden nicht erlaubt'); return; }
+      const reg = await navigator.serviceWorker.ready;
+      const vap = await (await fetch(stravaWorker('/push/vapid'))).json();
+      if (!vap.publicKey) throw new Error('Worker liefert keinen Schlüssel — Worker aktuell?');
+      const alt = await reg.pushManager.getSubscription();
+      if (alt) await alt.unsubscribe();
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: b64urlZuBytes(vap.publicKey)
+      });
+      S.settings.push = { aktiv: true, sub: sub.toJSON() };
+      save();
+      render();
+      showToast('Pausen-Push aktiv');
+    } catch (e) {
+      showToast('Aktivierung fehlgeschlagen: ' + e.message);
+    }
+  },
+  'push-aus': async () => {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) await sub.unsubscribe();
+    } catch (e) { }
+    S.settings.push = { aktiv: false, sub: null };
+    save();
+    render();
+    showToast('Pausen-Push deaktiviert');
+  },
   'strava-post-wo': el => stravaPosteWorkout(el.dataset.id, false),
   'strava-post-run': el => { closeSheet(); stravaPosteLauf(el.dataset.id, false); },
 

@@ -4,7 +4,7 @@
  * VERSION wird von build.py (--bump) synchron zu den ?v=N-Einbindungen gehalten:
  * neue Version → neuer Cache → alte Caches werden beim Aktivieren gelöscht.
  */
-const VERSION = '22';
+const VERSION = '23';
 const CACHE = 'kraftlog-v' + VERSION;
 const DATEIEN = [
   './',
@@ -36,6 +36,22 @@ self.addEventListener('activate', e => {
       .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
       .then(() => self.clients.claim())
   );
+});
+
+/* Pausen-Push: der Worker sendet payloadlose Pushes — wir zeigen die feste Meldung.
+ * (iOS verlangt, dass jeder Push eine sichtbare Benachrichtigung erzeugt.) */
+self.addEventListener('push', e => {
+  e.waitUntil(self.registration.showNotification('Kraftlog', {
+    body: 'Pause vorbei — weiter geht\'s!',
+    tag: 'kraftlog-pause'
+  }));
+});
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  e.waitUntil(clients.matchAll({ type: 'window', includeUncontrolled: true }).then(liste => {
+    if (liste.length) return liste[0].focus();
+    return clients.openWindow('./');
+  }));
 });
 
 self.addEventListener('fetch', e => {

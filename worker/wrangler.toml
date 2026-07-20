@@ -1,0 +1,20 @@
+# Kraftlog-Proxy: Strava-Anbindung + Pausen-Push (Web Push mit Durable-Object-Alarmen)
+# Deploy: npx wrangler deploy   (nach npx wrangler login)
+# Strava-Zugangsdaten (optional, nur für die Strava-Anbindung):
+#   npx wrangler secret put STRAVA_CLIENT_SECRET
+#   Variable STRAVA_CLIENT_ID im Dashboard oder per [vars] unten setzen.
+name = "kraftlog-proxy"
+main = "src/index.js"
+compatibility_date = "2026-07-01"
+
+[[durable_objects.bindings]]
+name = "PAUSEN"
+class_name = "PausenTimer"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PausenTimer"]
+
+# [vars]
+# STRAVA_CLIENT_ID = "123456"
+# ERLAUBTE_ORIGIN = "https://vtokyy.github.io"
