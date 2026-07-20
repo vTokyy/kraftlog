@@ -18,8 +18,9 @@ from pathlib import Path
 QUELLE = Path(__file__).resolve().parent
 APP_ZIEL = Path.home() / 'Desktop' / 'Kraftlog.app' / 'Contents' / 'Resources' / 'app'
 DIST = QUELLE / 'dist'
-DATEIEN = ['index.html', 'style.css', 'exercises.js', 'charts.js', 'timer.js', 'app.js',
-           'manifest.webmanifest', 'sw.js', 'icon-192.png', 'icon-512.png', 'apple-touch-icon.png']
+DATEIEN = ['index.html', 'style.css', 'exercises.js', 'icons.js', 'coach.js', 'charts.js',
+           'timer.js', 'app.js', 'manifest.webmanifest', 'sw.js',
+           'icon-192.png', 'icon-512.png', 'apple-touch-icon.png']
 
 
 def bump():
