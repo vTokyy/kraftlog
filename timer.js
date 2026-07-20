@@ -28,6 +28,13 @@ window.KraftlogTimer = (function () {
     } catch (e) { beepEl = null; stilleEl = null; }
   }
 
+  /* iOS-Audio-Session (Safari 17+): 'ambient' mischt sich mit Musik statt sie zu stoppen;
+     'transient' duckt Musik kurz fuer die Glocke; 'playback' haelt die App im Hintergrund wach
+     (nur im Opt-in-Modus "Signal bei gesperrtem Handy" - unterbricht dann Musik). */
+  function session(typ) {
+    try { if (navigator.audioSession) navigator.audioSession.type = typ; } catch (e) { }
+  }
+
   function ensureCtx() {
     if (!ctx) {
       var AC = window.AudioContext || window.webkitAudioContext;
@@ -38,6 +45,7 @@ window.KraftlogTimer = (function () {
 
   /* In einer Nutzer-Geste aufrufen (erster Satz-Haken): entsperrt WebAudio UND die Audio-Elemente. */
   function unlock() {
+    session('ambient');
     var c = ensureCtx();
     if (c) {
       try {
@@ -64,6 +72,8 @@ window.KraftlogTimer = (function () {
 
   /* Glockenklang (Vordergrund, WebAudio): zwei sanfte Anschläge mit Obertönen. */
   function beep() {
+    session('transient');
+    setTimeout(function () { session('ambient'); }, 2500);
     var c = ensureCtx();
     if (!c || c.state !== 'running') return false;
     try {
@@ -91,6 +101,8 @@ window.KraftlogTimer = (function () {
   /* Piepton über das Audio-Element — funktioniert auch im Hintergrund/gesperrt,
      solange die stille Schleife die Audio-Session hält. */
   function beepLaut() {
+    session('transient');
+    setTimeout(function () { session('ambient'); }, 2500);
     ensureEls();
     if (!beepEl) return false;
     try {
@@ -103,6 +115,7 @@ window.KraftlogTimer = (function () {
 
   /* Pause beginnt: stille Schleife starten (haelt die App im Hintergrund wach). */
   function restStart() {
+    session('playback');
     ensureEls();
     if (!stilleEl) return;
     try {
@@ -118,6 +131,7 @@ window.KraftlogTimer = (function () {
 
   /* Pause beendet: Schleife stoppen. */
   function restStop() {
+    session('ambient');
     if (!stilleEl) return;
     try { stilleEl.pause(); stilleEl.currentTime = 0; } catch (e) { }
   }

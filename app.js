@@ -47,6 +47,7 @@ function defaults() {
     settings: {
       theme: 'auto', sound: true, vibration: true,
       benachrichtigung: true,
+      hintergrundSignal: false,
       coach: true,
       restCompound: 180, restIsolation: 90,
       incUpper: 2.5, incLower: 5, lastExport: null,
@@ -798,7 +799,7 @@ function checkSet(xi, si) {
   if (s.done === true) {          // wieder aufmachen
     s.done = false;
     s.doneAt = null;
-    if (aw.rest && aw.rest.exIdx === xi && aw.rest.setIdx === si) { aw.rest = null; Signal.restStop(); }
+    if (aw.rest && aw.rest.exIdx === xi && aw.rest.setIdx === si) { aw.rest = null; pauseWachEnde(); }
     delete s.pr;
     save();
     render();
@@ -836,7 +837,7 @@ function checkSet(xi, si) {
   }
   /* Pause starten */
   aw.rest = { startedAt: now, targetSec: restTarget(wex.exId, wex.restSec), exIdx: xi, setIdx: si, signaled: false };
-  if (S.settings.sound) Signal.restStart();   // stille Schleife hält die App im Hintergrund wach
+  pauseWach();   // Wake Lock (Standard) bzw. stille Schleife (Opt-in "Signal bei gesperrtem Handy")
   save();
   render();
 }
@@ -861,7 +862,7 @@ function finishWorkout() {
   S.workouts.push(w);
   S.workouts.sort((a, b) => a.startedAt - b.startedAt);
   S.activeWorkout = null;
-  Signal.restStop();
+  pauseWachEnde();
   save();
   closeSheet();
   showToast('Training gespeichert');
@@ -888,7 +889,7 @@ function finishWorkout() {
 }
 function discardWorkout() {
   S.activeWorkout = null;
-  Signal.restStop();
+  pauseWachEnde();
   save();
   closeSheet();
   render();
@@ -947,6 +948,32 @@ function tplStrukturUpdate(tpl, w) {
   });
 }
 
+/* --- Wachhalten während der Pause ---
+ * Standard (musikfreundlich): Screen-Wake-Lock — der Bildschirm bleibt an, die App
+ * läuft sichtbar weiter, Musik anderer Apps wird nicht angetastet.
+ * Opt-in "Signal bei gesperrtem Handy": stille Tonspur hält die App auch gesperrt
+ * wach — unterbricht dafür die Musik-Wiedergabe (iOS-Einschränkung). */
+let wakeLock = null;
+async function wakeLockAn() {
+  try {
+    if ('wakeLock' in navigator && !wakeLock && !document.hidden) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    }
+  } catch (e) { }
+}
+function wakeLockAus() {
+  try { if (wakeLock) { wakeLock.release(); wakeLock = null; } } catch (e) { }
+}
+function pauseWach() {
+  wakeLockAn();
+  if (S.settings.sound && S.settings.hintergrundSignal === true) Signal.restStart();
+}
+function pauseWachEnde() {
+  Signal.restStop();
+  wakeLockAus();
+}
+
 /* --- Benachrichtigung am Pausenende --- */
 function notifyErlaubnisAnfragen() {
   if (S.settings.benachrichtigung === false) return;
@@ -1002,7 +1029,7 @@ function renderTimerBar() {
     }
     if (S.settings.vibration) Signal.vibrate();
     notifyPause();
-    Signal.restStop();     // stille Schleife beenden — Signal ist raus
+    pauseWachEnde();     // stille Schleife beenden — Signal ist raus
   }
 }
 function endRest(exakt) {
@@ -1014,7 +1041,7 @@ function endRest(exakt) {
     if (rs && rs.restSec == null) rs.restSec = Math.round((Date.now() - aw.rest.startedAt) / 1000);
   }
   aw.rest = null;
-  Signal.restStop();
+  pauseWachEnde();
   save();
   render();
 }
@@ -1503,10 +1530,12 @@ function renderDaten() {
       '<select data-set="theme">' +
       [['auto', 'Automatisch'], ['hell', 'Hell'], ['dunkel', 'Dunkel']].map(o =>
         '<option value="' + o[0] + '"' + (st.theme === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>') +
-    settingRow('Ton', 'Piepton am Pausenende — hält die App während der Pause im Hintergrund wach (leise Audio-Session)',
+    settingRow('Ton', 'Glockenton am Pausenende — mischt sich mit laufender Musik, ohne sie zu stoppen',
       switchHtml('sound', st.sound)) +
     settingRow('Benachrichtigung', 'Systemmeldung am Pausenende; die Erlaubnis fragt dein Gerät beim ersten abgehakten Satz ab',
       switchHtml('benachrichtigung', st.benachrichtigung !== false)) +
+    settingRow('Signal bei gesperrtem Handy', 'Hält die App per stiller Tonspur auch gesperrt wach — unterbricht dabei aber deine Musik. Aus (Standard): Der Bildschirm bleibt während der Pause einfach an.',
+      switchHtml('hintergrundSignal', st.hintergrundSignal === true)) +
     settingRow('Vibration', 'wo unterstützt (Android)',
       switchHtml('vibration', st.vibration));
   h += '<div class="section-title">Training</div>' +
@@ -2527,13 +2556,13 @@ const ACTIONS = {
     wex.sets.splice(i, 1);
     /* Pausen-Zeiger korrigieren */
     if (aw.rest && aw.rest.exIdx === xi) {
-      if (aw.rest.setIdx === i) { aw.rest = null; Signal.restStop(); }
+      if (aw.rest.setIdx === i) { aw.rest = null; pauseWachEnde(); }
       else if (aw.rest.setIdx > i) aw.rest.setIdx--;
     }
     if (!wex.sets.length) {
       aw.exercises.splice(xi, 1);
       if (aw.rest) {
-        if (aw.rest.exIdx === xi) { aw.rest = null; Signal.restStop(); }
+        if (aw.rest.exIdx === xi) { aw.rest = null; pauseWachEnde(); }
         else if (aw.rest.exIdx > xi) aw.rest.exIdx--;
       }
     }
@@ -2670,7 +2699,7 @@ const ACTIONS = {
     if (restSet) {
       const ni = wex.sets.indexOf(restSet);
       if (ni >= 0) aw.rest.setIdx = ni;
-      else { aw.rest = null; Signal.restStop(); }
+      else { aw.rest = null; pauseWachEnde(); }
     }
     save();
     closeSheet();
@@ -3214,7 +3243,11 @@ maybeResumePrompt();
 setInterval(tick, 500);
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { clearTimeout(saveTimer); save(); } // Debounce flushen — iOS feuert beforeunload nicht zuverlässig
-  else renderTimerBar();
+  else {
+    renderTimerBar();
+    if (S.activeWorkout && S.activeWorkout.rest) wakeLockAn(); // Wake Lock wird beim Verlassen freigegeben → erneuern
+  }
 });
+if (S.activeWorkout && S.activeWorkout.rest) wakeLockAn(); // laufende Pause nach App-Start weiter wachhalten
 window.addEventListener('beforeunload', () => save());
 })();
