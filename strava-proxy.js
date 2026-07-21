@@ -15,8 +15,17 @@
  * 3. Worker → Settings → Variables and Secrets:
  *    STRAVA_CLIENT_ID     (Typ Text)   = deine Client-ID
  *    STRAVA_CLIENT_SECRET (Typ Secret) = dein Client-Secret
+ *    KRAFTLOG_KEY         (Typ Secret) = empfohlen: Zugangsschlüssel, sonst kann
+ *                                        jeder mit deiner Worker-URL dein
+ *                                        Strava-Kontingent nutzen. Denselben Wert
+ *                                        in Kraftlog unter Daten → Zugangsschlüssel
+ *                                        eintragen.
  * 4. Worker-URL kopieren (https://kraftlog-strava.<dein-name>.workers.dev)
  *    und in Kraftlog unter Daten → Strava eintragen.
+ *
+ * Hinweis: Die vollere Variante (Strava + Pausen-Push) liegt im Ordner worker/
+ * des Repos und wird per wrangler deployt — diese Datei hier ist der einfache
+ * Nur-Strava-Weg über den Dashboard-Editor.
  */
 const STANDARD_ORIGIN = 'https://vtokyy.github.io';
 
@@ -26,9 +35,17 @@ export default {
     const cors = {
       'Access-Control-Allow-Origin': origin,
       'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+      'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-Kraftlog-Key',
     };
-    if (request.method === 'OPTIONS') return new Response(null, { headers: cors });
+    /* Preflight ohne Auth-Check — der Browser schickt ihn ohne Custom-Header */
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { headers: Object.assign({ 'Access-Control-Max-Age': '86400' }, cors) });
+    }
+    /* Zugangsschlüssel — nur geprüft, wenn das Secret KRAFTLOG_KEY gesetzt ist
+     * (damit bestehende Dashboard-Setups ohne Secret weiterlaufen) */
+    if (env.KRAFTLOG_KEY && request.headers.get('X-Kraftlog-Key') !== env.KRAFTLOG_KEY) {
+      return antwort({ message: 'Zugangsschlüssel fehlt oder ist falsch' }, 401, cors);
+    }
     const url = new URL(request.url);
     try {
       /* Token holen bzw. erneuern (Secret bleibt hier im Worker) */

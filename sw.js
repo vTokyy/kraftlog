@@ -4,7 +4,7 @@
  * VERSION wird von build.py (--bump) synchron zu den ?v=N-Einbindungen gehalten:
  * neue Version → neuer Cache → alte Caches werden beim Aktivieren gelöscht.
  */
-const VERSION = '23';
+const VERSION = '24';
 const CACHE = 'kraftlog-v' + VERSION;
 const DATEIEN = [
   './',
@@ -38,11 +38,23 @@ self.addEventListener('activate', e => {
   );
 });
 
-/* Pausen-Push: der Worker sendet payloadlose Pushes — wir zeigen die feste Meldung.
+/* Pausen-Push: der Worker sendet Declarative-Web-Push-Nachrichten (web_push: 8030).
+ * Ab iOS 18.4 zeigt Safari die Meldung direkt aus dem Payload an, ohne diesen
+ * Handler zu wecken — er bleibt als Fallback für ältere Geräte (iOS 16.4–18.3)
+ * und zeigt dann den mitgeschickten Inhalt an.
  * (iOS verlangt, dass jeder Push eine sichtbare Benachrichtigung erzeugt.) */
 self.addEventListener('push', e => {
-  e.waitUntil(self.registration.showNotification('Kraftlog', {
-    body: 'Pause vorbei — weiter geht\'s!',
+  let titel = 'Pause vorbei';
+  let text = 'Weiter geht’s mit dem nächsten Satz.';
+  try {
+    const d = e.data ? e.data.json() : null;
+    if (d && d.notification) {
+      if (d.notification.title) titel = d.notification.title;
+      if (d.notification.body) text = d.notification.body;
+    }
+  } catch (_) { /* payloadlos oder kein JSON: Standardtext */ }
+  e.waitUntil(self.registration.showNotification(titel, {
+    body: text,
     tag: 'kraftlog-pause'
   }));
 });

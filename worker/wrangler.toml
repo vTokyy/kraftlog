@@ -1,5 +1,7 @@
 # Kraftlog-Proxy: Strava-Anbindung + Pausen-Push (Web Push mit Durable-Object-Alarmen)
 # Deploy: npx wrangler deploy   (nach npx wrangler login)
+# Pflicht-Secret (Zugangsschutz; ohne es antwortet der Worker nur mit 401):
+#   npx wrangler secret put KRAFTLOG_KEY     # Wert z. B. via: openssl rand -hex 24
 # Strava-Zugangsdaten (optional, nur für die Strava-Anbindung):
 #   npx wrangler secret put STRAVA_CLIENT_SECRET
 #   Variable STRAVA_CLIENT_ID im Dashboard oder per [vars] unten setzen.
@@ -14,6 +16,17 @@ class_name = "PausenTimer"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["PausenTimer"]
+
+# Rate Limiting pro IP (zweite Schutzschicht neben dem Zugangsschlüssel).
+# period darf nur 10 oder 60 sein. Falls Wrangler die Syntax ablehnt
+# (Feature war lange Beta): Block entfernen — der Worker läuft auch ohne
+# das Binding (Guard im Code), dann in den Cloudflare-Docs nach
+# "Workers Rate Limiting binding" schauen.
+[[unsafe.bindings]]
+name = "LIMITER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 30, period = 60 }
 
 # [vars]
 # STRAVA_CLIENT_ID = "123456"

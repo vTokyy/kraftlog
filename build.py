@@ -44,18 +44,33 @@ def bump():
     print(f'sw.js auf Version {v} gesetzt.')
 
 
+def ohne_csp(html):
+    """Die strikte CSP gilt nur fuer die gehostete Version — im file://-Kontext
+    (Mac-Bundle, Single-File-Variante) ist 'self' unzuverlaessig und die
+    Single-File-Variante hat ohnehin Inline-Skripte."""
+    start = html.find('<meta http-equiv="Content-Security-Policy"')
+    if start == -1:
+        return html
+    ende = html.find('>', start) + 1
+    return html[:start] + html[ende:]
+
+
 def build_app():
     if not APP_ZIEL.parent.parent.exists():
         sys.exit(f'FEHLER: Kraftlog.app nicht gefunden ({APP_ZIEL.parent.parent}). '
                  'Zuerst mit osacompile erzeugen (siehe LIESMICH.txt).')
     APP_ZIEL.mkdir(parents=True, exist_ok=True)
     for name in DATEIEN:
-        shutil.copy2(QUELLE / name, APP_ZIEL / name)
-    print(f'{len(DATEIEN)} Dateien nach {APP_ZIEL} kopiert.')
+        if name == 'index.html':
+            html = ohne_csp((QUELLE / name).read_text(encoding='utf-8'))
+            (APP_ZIEL / name).write_text(html, encoding='utf-8')
+        else:
+            shutil.copy2(QUELLE / name, APP_ZIEL / name)
+    print(f'{len(DATEIEN)} Dateien nach {APP_ZIEL} kopiert (index.html ohne CSP).')
 
 
 def build_artifact():
-    html = (QUELLE / 'index.html').read_text(encoding='utf-8')
+    html = ohne_csp((QUELLE / 'index.html').read_text(encoding='utf-8'))
 
     # PWA-Verweise entfernen — die Single-File-Variante ist bewusst hüllenlos
     html = re.sub(r'\s*<link rel="(?:manifest|apple-touch-icon)"[^>]*>', '', html)

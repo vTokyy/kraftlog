@@ -53,7 +53,9 @@ function defaults() {
       incUpper: 2.5, incLower: 5, lastExport: null,
       groesseCm: null,
       strava: { workerUrl: '', clientId: '', refreshToken: null, accessToken: null, accessBis: 0, athlet: '', autoPost: true },
-      push: { aktiv: false, sub: null }
+      workerKey: '',        // Zugangsschlüssel des Cloudflare-Workers (X-Kraftlog-Key)
+      push: { aktiv: false, sub: null },
+      pushInhalt: false     // Opt-in: Übungsname in der Push-Meldung (verlässt dafür das Gerät)
     },
     customExercises: [],
     exerciseSettings: {},
@@ -82,6 +84,8 @@ function sanitizeState(s) {
   s.settings.push = (s.settings.push && typeof s.settings.push === 'object')
     ? Object.assign({}, d.settings.push, s.settings.push)
     : d.settings.push;
+  if (typeof s.settings.workerKey !== 'string') s.settings.workerKey = '';
+  s.settings.pushInhalt = s.settings.pushInhalt === true;
   s.workouts = s.workouts.filter(w => w && Array.isArray(w.exercises) && typeof w.startedAt === 'number');
   s.templates = s.templates.filter(t => t && Array.isArray(t.exercises));
   s.templates.forEach(t => {
@@ -987,15 +991,45 @@ function pushAktiv() {
 }
 function pushPlanen(delaySec) {
   if (!pushAktiv() || !navigator.onLine || !(delaySec > 0)) return;
-  fetch(stravaWorker('/push/planen'), {
+  const koerper = { subscription: S.settings.push.sub, delaySec: Math.round(delaySec) };
+  const info = pushMeldung();
+  if (info) { koerper.titel = info.titel; koerper.text = info.text; }
+  workerFetch('/push/planen', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ subscription: S.settings.push.sub, delaySec: Math.round(delaySec) })
+    body: JSON.stringify(koerper)
   }).catch(() => { });
+}
+/* Inhalt der Push-Meldung (Opt-in): nächster offener Satz nach der laufenden
+ * Pause — der Übungsname verlässt dafür das Gerät (verschlüsselt zum Push-Dienst). */
+function pushMeldung() {
+  if (S.settings.pushInhalt !== true) return null;
+  const aw = S.activeWorkout;
+  if (!aw || !aw.rest) return null;
+  let treffer = null;
+  const suche = (abEx, abSet) => {
+    for (let x = abEx; x < aw.exercises.length && !treffer; x++) {
+      const sets = aw.exercises[x].sets;
+      for (let i = (x === abEx ? abSet : 0); i < sets.length; i++) {
+        if (sets[i].done !== true) { treffer = { x, i }; break; }
+      }
+    }
+  };
+  suche(aw.rest.exIdx, aw.rest.setIdx + 1);
+  if (!treffer) suche(0, 0);
+  if (!treffer) return null;
+  const wex = aw.exercises[treffer.x];
+  const name = exById(wex.exId).name;
+  return {
+    titel: 'Pause vorbei',
+    /* Kürzen: Benachrichtigungstexte sind kurz, und der verschlüsselte
+     * Push-Payload darf 4096 Bytes nie erreichen (extrem lange Übungsnamen) */
+    text: (wex.sets[treffer.i].warmup ? name + ' — Aufwärmsatz' : name + ' — Satz ' + (treffer.i + 1)).slice(0, 120)
+  };
 }
 function pushStorno() {
   if (!pushAktiv()) return;
-  fetch(stravaWorker('/push/stornieren'), {
+  workerFetch('/push/stornieren', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ subscription: S.settings.push.sub })
@@ -1597,11 +1631,17 @@ function renderDaten() {
       '<div class="row-2"><button class="btn btn-primary" data-action="strava-verbinden">Mit Strava verbinden</button>' +
       '<button class="btn" data-action="strava-hilfe">Anleitung</button></div>';
   }
+  /* Zugangsschlüssel für den Worker (gilt für Strava UND Pausen-Push) */
+  h += '<div class="form-row" style="margin-top:10px"><label>Zugangsschlüssel</label>' +
+    '<input class="input" type="password" placeholder="wird beim Worker-Deploy festgelegt" value="' + esc(st.workerKey || '') + '" data-appset="workerKey" autocapitalize="off" autocorrect="off" autocomplete="off"></div>' +
+    '<div class="mini-note">Schützt deinen Worker vor fremden Zugriffen (Strava und Pausen-Push) — muss auf allen Geräten gleich sein.</div>';
   /* Pausen-Push */
   h += '<div class="section-title">Pausen-Push</div>';
   if (S.settings.push.aktiv) {
     h += settingRow('Pausen-Push aktiv', 'Am Pausenende klingelt eine Push-Nachricht — auch bei gesperrtem Handy, ohne deine Musik zu stoppen. Braucht kurz Internet beim Abhaken.',
       '<span class="tag" style="background:var(--green-soft);color:var(--green);margin:0">Aktiv</span>') +
+      settingRow('Übungsname in der Meldung', 'Zeigt z. B. „Pause vorbei — Bankdrücken, Satz 3". Der Übungsname verlässt dafür kurz dein Gerät (verschlüsselt zum Push-Dienst). Aus: nur „Pause vorbei".',
+        switchHtml('pushInhalt', st.pushInhalt === true)) +
       '<button class="btn btn-block" data-action="push-aus">Pausen-Push deaktivieren</button>';
   } else {
     h += '<div class="info-box">Push-Weckruf am Pausenende: klingelt auch bei gesperrtem Handy oder in anderer App — und deine Musik läuft ungestört weiter. Nutzt denselben Cloudflare-Worker wie Strava (Worker-URL oben eintragen). Nur in der installierten App (Home-Bildschirm) möglich.</div>' +
@@ -1670,7 +1710,7 @@ function exportClipboard() {
 }
 function exportTextarea(data) {
   openSheet('<div class="sheet-title">Export</div><div class="sheet-sub">Text markieren und kopieren:</div>' +
-    '<textarea class="input" style="min-height:150px" readonly onclick="this.select()">' + esc(data) + '</textarea>');
+    '<textarea class="input" style="min-height:150px" readonly data-action="ta-select">' + esc(data) + '</textarea>');
   S.settings.lastExport = Date.now();
   save();
 }
@@ -1924,7 +1964,7 @@ function exportPlaene(ids) {
     showToast(tpls.length + ' Pläne exportiert: ' + name);
   } catch (e) {
     openSheet('<div class="sheet-title">Pläne exportieren</div><div class="sheet-sub">Text markieren und kopieren:</div>' +
-      '<textarea class="input" style="min-height:150px" readonly onclick="this.select()">' + esc(json) + '</textarea>');
+      '<textarea class="input" style="min-height:150px" readonly data-action="ta-select">' + esc(json) + '</textarea>');
   }
 }
 function importPlaene(text) {
@@ -2169,6 +2209,26 @@ function stravaVerbunden() {
 function stravaWorker(pfad) {
   return S.settings.strava.workerUrl.replace(/\/+$/, '') + pfad;
 }
+/* Zentraler Worker-Aufruf: hängt den Zugangsschlüssel an (X-Kraftlog-Key)
+ * und meldet einen falschen/fehlenden Schlüssel verständlich. */
+function workerFetch(pfad, opts) {
+  opts = opts || {};
+  const kopf = Object.assign({}, opts.headers);
+  if (S.settings.workerKey) kopf['X-Kraftlog-Key'] = S.settings.workerKey;
+  opts.headers = kopf;
+  return fetch(stravaWorker(pfad), opts).then(r => {
+    if (r.status === 401) {
+      /* Nur der Worker-eigene 401 betrifft den Schlüssel — Strava-401er
+       * (z. B. entzogener Zugriff) werden 1:1 durchgereicht und anders behandelt */
+      r.clone().json().then(d => {
+        if (d && typeof d.message === 'string' && d.message.indexOf('Zugangsschlüssel') === 0) {
+          showToast('Zugangsschlüssel fehlt oder ist falsch (Daten → Zugangsschlüssel)');
+        }
+      }).catch(() => { });
+    }
+    return r;
+  });
+}
 function isoLokal(ms) {
   const d = new Date(ms);
   const p = n => String(n).padStart(2, '0');
@@ -2176,7 +2236,7 @@ function isoLokal(ms) {
 }
 async function stravaToken(body) {
   const st = S.settings.strava;
-  const r = await fetch(stravaWorker('/token'), {
+  const r = await workerFetch('/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
@@ -2197,7 +2257,7 @@ async function stravaAccess() {
 }
 async function stravaAktivitaet(daten) {
   const token = await stravaAccess();
-  const r = await fetch(stravaWorker('/activities'), {
+  const r = await workerFetch('/activities', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
     body: JSON.stringify(daten)
@@ -3094,7 +3154,7 @@ const ACTIONS = {
   'strava-hilfe': () => openSheet('<div class="sheet-title">Strava einrichten</div>' +
     '<div class="sheet-sub">Einmalig, ca. 5 Minuten. Strava erlaubt keine direkten Browser-Zugriffe — deshalb läuft ein Mini-Vermittler unter deinem eigenen kostenlosen Cloudflare-Account (dein Client-Secret bleibt dort, nie im Browser).</div>' +
     '<div class="info-box"><b>1. Strava-API-App anlegen</b><br>strava.com/settings/api → Anwendung erstellen: Name „Kraftlog", Website https://vtokyy.github.io, Autorisierungs-Callback-Domain: <b>vtokyy.github.io</b>. Danach Client-ID und Client-Secret notieren.</div>' +
-    '<div class="info-box"><b>2. Cloudflare Worker anlegen</b><br>dash.cloudflare.com (kostenloser Account) → Workers &amp; Pages → Create Worker → Deploy → „Edit code" → den Inhalt der Datei <b>strava-proxy.js</b> aus dem Kraftlog-GitHub-Repo (github.com/vTokyy/kraftlog) einfügen → Deploy. Dann unter Settings → Variables: <b>STRAVA_CLIENT_ID</b> (Text) und <b>STRAVA_CLIENT_SECRET</b> (Secret) eintragen.</div>' +
+    '<div class="info-box"><b>2. Cloudflare Worker anlegen</b><br>dash.cloudflare.com (kostenloser Account) → Workers &amp; Pages → Create Worker → Deploy → „Edit code" → den Inhalt der Datei <b>strava-proxy.js</b> aus dem Kraftlog-GitHub-Repo (github.com/vTokyy/kraftlog) einfügen → Deploy. Dann unter Settings → Variables: <b>STRAVA_CLIENT_ID</b> (Text), <b>STRAVA_CLIENT_SECRET</b> (Secret) und empfohlen <b>KRAFTLOG_KEY</b> (Secret, frei gewählter Zugangsschlüssel — denselben Wert unten bei „Zugangsschlüssel" eintragen).</div>' +
     '<div class="info-box"><b>3. Verbinden</b><br>Worker-URL (https://….workers.dev) und Client-ID hier eintragen → „Mit Strava verbinden" → bei Strava freigeben. Fertig — ab dann wird jedes beendete Training automatisch gepostet.</div>' +
     '<div class="sheet-actions"><button class="btn btn-primary" data-action="sheet-close">Alles klar</button></div>'),
   'push-aktivieren': async () => {
@@ -3108,7 +3168,7 @@ const ACTIONS = {
       const erlaubnis = await Notification.requestPermission();
       if (erlaubnis !== 'granted') { showToast('Benachrichtigungen wurden nicht erlaubt'); return; }
       const reg = await navigator.serviceWorker.ready;
-      const vap = await (await fetch(stravaWorker('/push/vapid'))).json();
+      const vap = await (await workerFetch('/push/vapid')).json();
       if (!vap.publicKey) throw new Error('Worker liefert keinen Schlüssel — Worker aktuell?');
       const alt = await reg.pushManager.getSubscription();
       if (alt) await alt.unsubscribe();
@@ -3137,6 +3197,9 @@ const ACTIONS = {
   },
   'strava-post-wo': el => stravaPosteWorkout(el.dataset.id, false),
   'strava-post-run': el => { closeSheet(); stravaPosteLauf(el.dataset.id, false); },
+
+  /* Export-Fallback-Textarea: Antippen markiert alles (Inline-onclick wäre CSP-blockiert) */
+  'ta-select': el => { try { el.select(); } catch (e) { } },
 
   'wipe': () => openSheet('<div class="sheet-title">Alle Daten löschen?</div>' +
     '<div class="sheet-sub">Alle Trainings, Pläne und Einstellungen werden entfernt. Das lässt sich nicht rückgängig machen — vorher exportieren!</div>' +
@@ -3231,6 +3294,12 @@ document.addEventListener('input', e => {
     saveSoon();
     return;
   }
+  /* String-Einstellungen (z. B. Worker-Zugangsschlüssel) */
+  if (el.dataset.appset) {
+    S.settings[el.dataset.appset] = el.value.trim();
+    saveSoon();
+    return;
+  }
   /* Übungs-Einstellungen */
   if (el.dataset.exset) {
     const id = el.dataset.id;
@@ -3317,6 +3386,12 @@ function maybeResumePrompt() {
    iPhone-Version offline-fähig. file:// (Mac-App) und Dev-Server bleiben unberührt. */
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   try { navigator.serviceWorker.register('./sw.js'); } catch (e) { }
+}
+
+/* Browser bitten, den Speicher als dauerhaft zu behandeln — senkt das Risiko,
+ * dass iOS die Daten unter Speicherdruck räumt. Ersetzt nicht den JSON-Export. */
+if (navigator.storage && navigator.storage.persist) {
+  try { navigator.storage.persist().catch(() => { }); } catch (e) { }
 }
 
 applyTheme();
