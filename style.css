@@ -515,14 +515,26 @@ circle.chart-dot { stroke: var(--card); stroke-width: 1.5; }
 .goku-bubble:before { content: ""; position: absolute; left: -7px; top: 50%; transform: translateY(-50%); border: 8px solid #0000; border-right-color: var(--card-2); border-left: 0; }
 .goku-name { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; color: var(--text-2); margin-bottom: 2px; }
 
+/* Die Kunst ist fuer ~440px Breite abgestimmt (feste 2px-Konturen!).
+   Deshalb: nativ gross rendern und wie ein Foto per transform:scale()
+   verkleinern — so schrumpfen auch die Linien proportional mit. */
+.goku-figur {
+  width: 110px;
+  height: 100px;
+  position: relative;
+  flex-shrink: 0;
+}
 .songoku {
   --m: #f9ddcc;
   --t: #120e0d;
-  width: 104px;
+  width: 440px;
   aspect-ratio: 1.1;
-  position: relative;
+  position: absolute;
+  top: 0;
+  left: 0;
   overflow: hidden;
-  flex-shrink: 0;
+  transform: scale(0.25);
+  transform-origin: top left;
 }
 .songoku .face {
     position: absolute;

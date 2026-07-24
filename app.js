@@ -518,12 +518,12 @@ function chartCard(title, inner) {
 let gokuFeierId = null;   // Workout-ID des zuletzt in dieser Sitzung beendeten Trainings
 
 function gokuHtml() {
-  return '<div class="songoku" aria-hidden="true"><div class="b-neck"></div><div class="neck-1"><div class="n1"></div></div>' +
+  return '<div class="goku-figur" aria-hidden="true"><div class="songoku"><div class="b-neck"></div><div class="neck-1"><div class="n1"></div></div>' +
     '<div class="cl"></div><div class="cr"></div><div class="ear-r"></div><div class="ear-l"></div>' +
     '<div class="face"><div class="mouth"></div><div class="noose"></div><div class="eye-r"></div><div class="eye-l"></div>' +
     '<div class="u-eyes"></div><div class="t-eye-r"></div><div class="t-eye-l"></div><div class="f"></div></div>' +
     '<div class="hair"><div class="e1"></div><div class="e2"></div><div class="e3"></div><div class="e4"></div>' +
-    '<div class="e5"></div><div class="e6"></div><div class="e7"></div><div class="e8"></div></div></div>';
+    '<div class="e5"></div><div class="e6"></div><div class="e7"></div><div class="e8"></div></div></div></div>';
 }
 function gokuKarte(text) {
   return '<div class="goku-card">' + gokuHtml() +
