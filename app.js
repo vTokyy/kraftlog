@@ -49,6 +49,7 @@ function defaults() {
       benachrichtigung: true,
       hintergrundSignal: false,
       coach: true,
+      goku: true,
       restCompound: 180, restIsolation: 90,
       incUpper: 2.5, incLower: 5, lastExport: null,
       groesseCm: null,
@@ -86,6 +87,7 @@ function sanitizeState(s) {
     : d.settings.push;
   if (typeof s.settings.workerKey !== 'string') s.settings.workerKey = '';
   s.settings.pushInhalt = s.settings.pushInhalt === true;
+  s.settings.goku = s.settings.goku !== false;
   s.workouts = s.workouts.filter(w => w && Array.isArray(w.exercises) && typeof w.startedAt === 'number');
   s.templates = s.templates.filter(t => t && Array.isArray(t.exercises));
   s.templates.forEach(t => {
@@ -510,6 +512,100 @@ function chartCard(title, inner) {
   return '<div class="card chart-card"><h3>' + esc(title) + '</h3>' + inner + '</div>';
 }
 
+/* ---------- Goku-Maskottchen (Coach-Kommentare) ----------
+   Erscheint NUR auf der Startseite ohne laufendes Training und in der
+   Detailansicht eines soeben beendeten Trainings — nie waehrend des Trainings. */
+let gokuFeierId = null;   // Workout-ID des zuletzt in dieser Sitzung beendeten Trainings
+
+function gokuHtml() {
+  return '<div class="songoku" aria-hidden="true"><div class="b-neck"></div><div class="neck-1"><div class="n1"></div></div>' +
+    '<div class="cl"></div><div class="cr"></div><div class="ear-r"></div><div class="ear-l"></div>' +
+    '<div class="face"><div class="mouth"></div><div class="noose"></div><div class="eye-r"></div><div class="eye-l"></div>' +
+    '<div class="u-eyes"></div><div class="t-eye-r"></div><div class="t-eye-l"></div><div class="f"></div></div>' +
+    '<div class="hair"><div class="e1"></div><div class="e2"></div><div class="e3"></div><div class="e4"></div>' +
+    '<div class="e5"></div><div class="e6"></div><div class="e7"></div><div class="e8"></div></div></div>';
+}
+function gokuKarte(text) {
+  return '<div class="goku-card">' + gokuHtml() +
+    '<div class="goku-bubble"><div class="goku-name">Goku</div>' + esc(text) + '</div></div>';
+}
+/* Tagesstabile Auswahl: wechselt taeglich, bleibt am selben Tag gleich */
+function gokuWahl(arr) {
+  return arr[Math.floor(Date.now() / TAG_MS) % arr.length];
+}
+function gokuSpruchHome() {
+  const heuteStart = startOfDay(Date.now());
+  const heuteTrainiert = S.workouts.some(w => w.startedAt >= heuteStart);
+  const wpHeuteTpl = S.templates.find(t => t.id === S.wochenplan[heuteWpTag()]);
+  const wpAktiv = WP_TAGE.some(t => S.templates.some(x => x.id === S.wochenplan[t]));
+  const letztes = S.workouts[S.workouts.length - 1];
+  const tageSeit = letztes ? Math.floor((Date.now() - letztes.startedAt) / TAG_MS) : null;
+
+  if (!S.workouts.length && !S.templates.length) {
+    return 'Hi, ich bin Goku! Leg einen Plan an und lass uns zusammen trainieren — jeder fängt mal klein an, sogar ich.';
+  }
+  if (heuteTrainiert) {
+    return gokuWahl([
+      'Training erledigt — super gemacht! Jetzt hast du dir einen riesigen Berg Essen verdient.',
+      'Stark! Für heute hast du alles gegeben. Ausruhen, essen, wachsen.',
+      'Sauber abgeliefert! So wirst du jeden Tag ein Stück stärker.'
+    ]);
+  }
+  if (wpHeuteTpl) {
+    return gokuWahl([
+      'Heute steht „' + wpHeuteTpl.name + '" an — los geht\'s, ich wärme mich schon mal auf!',
+      '„' + wpHeuteTpl.name + '" wartet auf dich. Ein Training auslassen? Würde ich nie — höchstens ein Essen. Nein, auch das nicht.',
+      'Zeit für „' + wpHeuteTpl.name + '"! Jeder Satz bringt dich näher an dein stärkstes Ich.'
+    ]);
+  }
+  const wp = wochenplanStatus();
+  const zuWenig = wp.zugewiesen ? wp.zeilen.find(z => z.status === 'wenig') : null;
+  if (zuWenig) {
+    return 'Dein Wochenplan ist fast perfekt — nur bei ' + zuWenig.mg + ' ist noch Luft: ' +
+      zuWenig.diff + (zuWenig.diff === 1 ? ' Satz' : ' Sätze') + ' mehr pro Woche, dann passt es!';
+  }
+  if (tageSeit != null && tageSeit >= 4) {
+    return gokuWahl([
+      'Schon ' + tageSeit + ' Tage kein Training — dein Training vermisst dich! Und ich auch.',
+      tageSeit + ' Tage Pause? Zeit, wieder anzugreifen — Stärke wartet nicht.',
+      'Hey, ' + tageSeit + ' Tage ohne Training! Selbst an Ruhetagen träume ich vom nächsten Satz.'
+    ]);
+  }
+  if (wpAktiv) {
+    return gokuWahl([
+      'Heute ist Ruhetag — Erholung macht stärker, glaub mir. Iss ordentlich!',
+      'Ruhetag! Muskeln wachsen in der Pause. Morgen greifen wir wieder an.',
+      'Heute wird regeneriert. Auch die stärksten Kämpfer brauchen Pausen.'
+    ]);
+  }
+  return gokuWahl([
+    'Bereit, wenn du es bist! Lass uns stärker werden.',
+    'Ein guter Tag, um an die eigenen Grenzen zu gehen — und darüber hinaus!',
+    'Training ist wie ein Turnier: Es zählt, dass du antrittst.'
+  ]);
+}
+function gokuSpruchWorkout(w) {
+  const prs = allPrEvents().filter(ev => ev.w.id === w.id).length;
+  if (prs) {
+    return gokuWahl([
+      'WOW! ' + prs + ' neue Bestleistung' + (prs > 1 ? 'en' : '') + '! Du wirst ja fast so stark wie ich — fast!',
+      prs + ' neue' + (prs > 1 ? '' : 'r') + ' Rekord' + (prs > 1 ? 'e' : '') + '! Genau so durchbricht man die eigenen Grenzen. Weiter so!'
+    ]);
+  }
+  const vorher = w.templateId
+    ? [...S.workouts].filter(x => x.templateId === w.templateId && x.id !== w.id && x.startedAt < w.startedAt).pop()
+    : null;
+  if (vorher && workoutVolume(w) > workoutVolume(vorher)) {
+    return 'Stark! Mehr Volumen als beim letzten Mal (' + fmtVol(workoutVolume(w)) + ' statt ' +
+      fmtVol(workoutVolume(vorher)) + ') — genau so wird man stärker!';
+  }
+  return gokuWahl([
+    'Super gemacht! Training geschafft — jetzt hast du dir eine riesige Portion Essen verdient.',
+    'Sauber durchgezogen! Ruh dich aus und iss ordentlich — Muskeln wachsen in der Pause.',
+    'Klasse Training! Jeder abgehakte Satz zählt. Ich bin stolz auf dich!'
+  ]);
+}
+
 /* ---------- View: Start (Workout beginnen) ---------- */
 function renderStart() {
   if (S.activeWorkout && zeigeWorkout) return renderActiveWorkout();
@@ -519,6 +615,8 @@ function renderStart() {
 
   const heute = new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
   let h = '<h1 class="view-title">Workout starten<small>' + esc(heute) + '</small></h1>' + warnHtml();
+  /* Goku begrüßt nur, wenn KEIN Training läuft (auch kein minimiertes) */
+  if (!S.activeWorkout && S.settings.goku !== false) h += gokuKarte(gokuSpruchHome());
   /* Heutiger Tag laut Wochenplan */
   const wpHeuteTpl = S.templates.find(t => t.id === S.wochenplan[heuteWpTag()]);
   const wpAktiv = WP_TAGE.some(t => S.templates.some(x => x.id === S.wochenplan[t]));
@@ -875,6 +973,7 @@ function finishWorkout() {
   save();
   closeSheet();
   showToast('Training gespeichert');
+  gokuFeierId = w.id;   // Goku feiert in der Detailansicht des frisch beendeten Trainings
   tab = 'verlauf';
   verlaufSub = { id: w.id };
   render();
@@ -1299,6 +1398,8 @@ function renderWorkoutDetail() {
     '<div class="stat-tile"><div class="stat-val">' + (w.finishedAt ? fmtDauer((w.finishedAt - w.startedAt) / 1000) : '–') + '</div><div class="stat-lab">Dauer</div></div>' +
     '<div class="stat-tile"><div class="stat-val">' + fmtVol(workoutVolume(w)) + '</div><div class="stat-lab">Volumen</div></div>' +
     '<div class="stat-tile"><div class="stat-val">' + workoutSetCount(w) + '</div><div class="stat-lab">Sätze</div></div></div>';
+  /* Goku feiert nur das soeben beendete Training (nie im Training, nie bei alten) */
+  if (w.id === gokuFeierId && S.settings.goku !== false) h += gokuKarte(gokuSpruchWorkout(w));
   h += '<div class="card">';
   w.exercises.forEach((wex, i) => {
     const ex = exById(wex.exId);
@@ -1607,7 +1708,8 @@ function renderDaten() {
     settingRow('Vibration', 'wo unterstützt (Android)',
       switchHtml('vibration', st.vibration));
   h += '<div class="section-title">Training</div>' +
-    settingRow('Intelligenter Coach', 'Pausen, Steigerungen und Wdh.-Ziele je nach Übungstyp & Muskelgruppe (evidenzbasiert), mit RPE-Autoregulation und Deload-Logik', switchHtml('coach', st.coach !== false));
+    settingRow('Intelligenter Coach', 'Pausen, Steigerungen und Wdh.-Ziele je nach Übungstyp & Muskelgruppe (evidenzbasiert), mit RPE-Autoregulation und Deload-Logik', switchHtml('coach', st.coach !== false)) +
+    settingRow('Goku-Maskottchen', 'Son Goku begrüßt dich auf der Startseite und feiert dein Trainingsende — nie während des Trainings', switchHtml('goku', st.goku !== false));
   if (st.coach !== false) {
     h += '<div class="info-box">Der Coach setzt die Standards automatisch — z. B. ~3:30 min Pause und ~5-%-Schritte bei Beine-Grundübungen, 1:30 min und kleinste Schritte bei Bizeps &amp; Co. Pro Plan oder pro Übung kannst du die Pause weiterhin manuell überschreiben. Im Training zeigt dir „Warum?" die Begründung jeder Empfehlung.</div>';
   } else {
@@ -3347,7 +3449,7 @@ document.addEventListener('change', e => {
     else if (k === 'stravaAuto') S.settings.strava.autoPost = el.checked;
     else if (el.type === 'checkbox') S.settings[k] = el.checked;
     save();
-    if (k === 'coach') render(); // Klassik-Einstellungen ein-/ausblenden
+    if (k === 'coach' || k === 'goku') render(); // Abhängige UI sofort aktualisieren
     return;
   }
 });
