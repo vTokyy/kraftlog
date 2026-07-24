@@ -18,6 +18,15 @@ const $ = sel => document.querySelector(sel);
 const LS_KEY = 'kraftlog-state-v1';
 const BACKUP_KEY = 'kraftlog-backup';
 const SCHEMA_VERSION = 1;
+/* App-/Cache-Version aus dem eigenen Skript-Tag lesen (build.py bumpt ?v=N).
+   Im Single-File-Artifact (kein ?v) → '—'. */
+const APP_VERSION = (function () {
+  try {
+    const s = document.querySelector('script[src*="app.js"]');
+    const m = s && s.src.match(/[?&]v=(\d+)/);
+    return m ? m[1] : '—';
+  } catch (e) { return '—'; }
+})();
 const EXES = window.KRAFTLOG_EXERCISES || [];
 const MGS = window.KRAFTLOG_MUSKELGRUPPEN || [];
 const EQS = window.KRAFTLOG_EQUIPMENT || [];
@@ -455,6 +464,7 @@ function closeSheet() {
   $('#sheet').classList.add('hidden');
   $('#sheet-content').innerHTML = '';
   pickerCb = null;
+  if (neueVersionBereit) swNeuladenWennBereit();   // vorgemerktes Update jetzt evtl. einspielen
 }
 function showChartTip(dot) {
   const tip = $('#chart-tip');
@@ -994,6 +1004,7 @@ function finishWorkout() {
         '<button class="btn" data-action="pu-keep">Plan so lassen</button></div>');
     }
   }
+  swNeuladenWennBereit();   // während des Trainings vorgemerktes Update jetzt einspielen
 }
 function discardWorkout() {
   S.activeWorkout = null;
@@ -1002,6 +1013,7 @@ function discardWorkout() {
   closeSheet();
   render();
   showToast('Training verworfen');
+  swNeuladenWennBereit();   // während des Trainings vorgemerktes Update jetzt einspielen
 }
 
 /* --- Plan nach dem Training aktualisieren --- */
@@ -1760,7 +1772,11 @@ function renderDaten() {
   try { backup = localStorage.getItem(BACKUP_KEY); } catch (e) { }
   if (backup) h += '<button class="btn btn-block" style="margin-top:10px" data-action="backup-restore">Backup wiederherstellen</button>';
   h += '<button class="btn btn-block btn-danger" style="margin-top:22px" data-action="wipe">Alle Daten löschen…</button>';
-  h += '<div class="mini-note" style="text-align:center;margin-top:20px">Kraftlog v1 · ' + allExercises().length + ' Übungen · Daten-Schema v' + SCHEMA_VERSION + '</div>';
+  /* App-Version & manuelles Update */
+  h += '<div class="section-title">App</div>' +
+    '<div class="info-box">Kraftlog aktualisiert sich beim Öffnen automatisch. Wenn eine neue Funktion noch fehlt, kannst du hier von Hand nach einem Update suchen — danach lädt die App kurz neu.</div>' +
+    '<button class="btn btn-block" data-action="app-update">Nach Update suchen</button>' +
+    '<div class="mini-note" style="text-align:center;margin-top:10px">Version ' + esc(APP_VERSION) + ' · ' + allExercises().length + ' Übungen · Daten-Schema v' + SCHEMA_VERSION + '</div>';
   return h;
 }
 function settingRow(title, sub, control) {
@@ -3303,6 +3319,28 @@ const ACTIONS = {
   /* Export-Fallback-Textarea: Antippen markiert alles (Inline-onclick wäre CSP-blockiert) */
   'ta-select': el => { try { el.select(); } catch (e) { } },
 
+  'app-update': () => {
+    if (!('serviceWorker' in navigator) || location.protocol !== 'https:' || !swReg) {
+      showToast('Automatische Updates gibt es nur in der installierten App (Home-Bildschirm)');
+      return;
+    }
+    /* Schon geladen (z. B. während eines Trainings vorgemerkt)? Jetzt anwenden. */
+    if (neueVersionBereit) {
+      swNeuladenWennBereit();
+      if (!swReloadGeplant) showToast(S.activeWorkout ? 'Wird nach dem Training aktiv' : 'Neue Version wird geladen …');
+      return;
+    }
+    if (!navigator.onLine) { showToast('Kein Internet — für ein Update musst du online sein'); return; }
+    showToast('Suche nach Update …');
+    swReg.update().then(() => {
+      setTimeout(() => {
+        /* Neuer Worker gefunden → controllerchange lädt gleich neu. Sonst: schon aktuell. */
+        if (swReg.installing || swReg.waiting || neueVersionBereit) showToast('Neue Version wird geladen …');
+        else showToast('Du hast bereits die neueste Version (' + APP_VERSION + ')');
+      }, 1500);
+    }).catch(() => showToast('Update-Prüfung fehlgeschlagen — bist du online?'));
+  },
+
   'wipe': () => openSheet('<div class="sheet-title">Alle Daten löschen?</div>' +
     '<div class="sheet-sub">Alle Trainings, Pläne und Einstellungen werden entfernt. Das lässt sich nicht rückgängig machen — vorher exportieren!</div>' +
     '<div class="sheet-actions"><button class="btn btn-danger" data-action="wipe-confirm">Ja, endgültig löschen</button>' +
@@ -3485,9 +3523,47 @@ function maybeResumePrompt() {
 }
 
 /* Service Worker: nur auf echtem Hosting (https) — macht die installierte
-   iPhone-Version offline-fähig. file:// (Mac-App) und Dev-Server bleiben unberührt. */
+   iPhone-Version offline-fähig. file:// (Mac-App) und Dev-Server bleiben unberührt.
+   Auto-Update: updateViaCache 'none' lädt sw.js immer frisch (nie aus dem
+   HTTP-Cache), damit neue Versionen überhaupt erkannt werden. Wird eine neue
+   Version aktiv (controllerchange), lädt die App neu — außer mitten im Training,
+   dann erst danach. So ist man beim Öffnen automatisch aktuell. */
+let swReg = null;
+let neueVersionBereit = false;
+let swReloadGeplant = false;
+/* Nur neu laden, wenn dabei nichts Ungespeichertes verloren geht: kein
+   laufendes Training, kein offener Editor (tplDraft/editDraft liegen NICHT in
+   localStorage) und kein offenes Dialog-Sheet. Sonst wird verschoben — der
+   nächste Vordergrund-Wechsel bzw. das Trainingsende spielt das Update ein. */
+function darfJetztNeuladen() {
+  if (S.activeWorkout) return false;
+  if (tplDraft || editDraft) return false;
+  const sheet = document.getElementById('sheet');
+  if (sheet && !sheet.classList.contains('hidden')) return false;
+  return true;
+}
+function swNeuladenWennBereit() {
+  if (!neueVersionBereit || swReloadGeplant) return;
+  if (!darfJetztNeuladen()) return;
+  swReloadGeplant = true;
+  location.reload();
+}
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
-  try { navigator.serviceWorker.register('./sw.js'); } catch (e) { }
+  const warKontrolliert = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!warKontrolliert) return;          // erster Besuch: initiale Übernahme, kein Update
+    neueVersionBereit = true;
+    swNeuladenWennBereit();
+    if (!swReloadGeplant) {
+      showToast(S.activeWorkout ? 'Neue Version bereit — nach dem Training aktiv'
+        : 'Neue Version bereit — wird beim nächsten Öffnen aktiv');
+    }
+  });
+  try {
+    navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' })
+      .then(reg => { swReg = reg; })
+      .catch(() => { });
+  } catch (e) { }
 }
 
 /* Browser bitten, den Speicher als dauerhaft zu behandeln — senkt das Risiko,
@@ -3506,6 +3582,8 @@ document.addEventListener('visibilitychange', () => {
   else {
     renderTimerBar();
     if (S.activeWorkout && S.activeWorkout.rest) wakeLockAn(); // Wake Lock wird beim Verlassen freigegeben → erneuern
+    if (swReg) { try { swReg.update(); } catch (e) { } }       // beim Öffnen nach Updates suchen
+    swNeuladenWennBereit();                                    // vorgemerktes Update (nach Training) einspielen
   }
 });
 if (S.activeWorkout && S.activeWorkout.rest) wakeLockAn(); // laufende Pause nach App-Start weiter wachhalten
