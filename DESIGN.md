@@ -356,6 +356,12 @@ Zehn Rollen, vier Gewichte (400 · 600 · 700 · 800), neun Größen. Nichts daz
 - **Label** (700, 11 px, `+0.5px`, Versalien): Abschnitts- und Spaltenüberschriften.
 
 ### Named Rules
+**Die Kein-Überschwingen-Regel.** Bewegung kommt zur Ruhe, sie federt nicht.
+Überschwingen gehört zu Gesten, die selbst Schwung tragen — einem Wisch, einem
+geworfenen Element. Nichts in Kraftlog wird geworfen, also gibt es keine
+Federkurve. Der Rekord-Moment feiert über Gold, Konfetti und Abzeichen, nicht
+über einen hüpfenden Hinweis.
+
 **Die Laufweiten-Regel.** Tracking ist größenabhängig, nie fix: −0,5 px bei 30 px,
 −0,2 px bei 17 px, **+0,5 px bei 11 px**. Große Schrift wirkt sonst auseinander-
 gefallen, kleine zusammengeklebt.
