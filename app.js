@@ -62,6 +62,7 @@ function defaults() {
       restCompound: 180, restIsolation: 90,
       incUpper: 2.5, incLower: 5, lastExport: null,
       groesseCm: null,
+      letztePauseFrei: 150,  // zuletzt gewählte freie Pausendauer (Schnellwahl im Training)
       strava: { workerUrl: '', clientId: '', refreshToken: null, accessToken: null, accessBis: 0, athlet: '', autoPost: true },
       workerKey: '',        // Zugangsschlüssel des Cloudflare-Workers (X-Kraftlog-Key)
       push: { aktiv: false, sub: null },
@@ -273,15 +274,15 @@ function feedBests(b, s) {
 function prGegen(b, s) {
   if (!b.any || s.warmup || s.kg == null || s.reps == null) return null;
   if (s.kg > 0 && (b.maxKg == null || s.kg > b.maxKg)) {
-    return { typ: 'gewicht', text: 'Neuer Gewichts-PR: ' + fmtKg(s.kg) + ' kg!' };
+    return { typ: 'gewicht', text: 'Neuer Gewichts-PR: ' + fmtKg(s.kg) + ' kg' };
   }
   const e = e1rmOf(s.kg, s.reps);
   if (e != null && b.maxE1rm != null && e > b.maxE1rm) {
-    return { typ: 'e1rm', text: 'Neuer e1RM-PR: ' + fmtKg(Math.round(e * 10) / 10) + ' kg!' };
+    return { typ: 'e1rm', text: 'Neuer e1RM-PR: ' + fmtKg(Math.round(e * 10) / 10) + ' kg' };
   }
   const prev = b.repsAtKg[String(s.kg)];
   if (prev != null && s.reps > prev) {
-    return { typ: 'wdh', text: 'Wiederholungs-PR: ' + s.reps + ' × ' + fmtKg(s.kg) + ' kg!' };
+    return { typ: 'wdh', text: 'Wiederholungs-PR: ' + s.reps + ' × ' + fmtKg(s.kg) + ' kg' };
   }
   return null;
 }
@@ -344,7 +345,7 @@ function warmupPreviewHtml(exId, targetKg) {
   return '<div class="wu-list">' + sets.map((s, i) =>
     '<div class="hist-set"><span class="hs-n">A' + (i + 1) + '</span>' +
     '<span class="hs-main">' + fmtKg(s.kg) + ' kg × ' + s.reps + '</span></div>').join('') +
-    '<div class="hist-set" style="border-top:1px solid var(--sep);margin-top:4px;padding-top:6px"><span class="hs-n">→</span>' +
+    '<div class="hist-set hist-set-sum"><span class="hs-n">→</span>' +
     '<span class="hs-main">' + fmtKg(targetKg) + ' kg (Arbeitsgewicht)</span></div></div>';
 }
 
@@ -442,8 +443,13 @@ function showToast(text, cls) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
 }
+/* Reduzierte Bewegung: der Nutzer bekommt die Meldung, aber keine fliegenden Teile. */
+function magBewegung() {
+  try { return !window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return true; }
+}
 let confettiTimer = null;
 function burstConfetti() {
+  if (!magBewegung()) return;
   const c = $('#confetti');
   const farben = ['#0a84ff', '#34c759', '#ff9500', '#ff3b30', '#ffcc00', '#5e5ce6'];
   let html = '';
@@ -456,23 +462,42 @@ function burstConfetti() {
   confettiTimer = setTimeout(() => { c.innerHTML = ''; }, 3400);
 }
 let pickerCb = null;
+let sheetCloseTimer = null;
 function openSheet(html) {
+  clearTimeout(sheetCloseTimer);
+  const s = $('#sheet');
+  s.classList.remove('closing');
   $('#sheet-content').innerHTML = html;
-  $('#sheet').classList.remove('hidden');
+  s.classList.remove('hidden');
 }
+/* Das Sheet fährt auf demselben Weg hinaus, auf dem es hereinkam. Erst danach
+   wird der Inhalt geleert — sonst klappt die Fläche mitten in der Ausfahrt zusammen. */
 function closeSheet() {
-  $('#sheet').classList.add('hidden');
-  $('#sheet-content').innerHTML = '';
+  const s = $('#sheet');
   pickerCb = null;
-  if (neueVersionBereit) swNeuladenWennBereit();   // vorgemerktes Update jetzt evtl. einspielen
+  if (s.classList.contains('hidden')) return;
+  const fertig = () => {
+    s.classList.add('hidden');
+    s.classList.remove('closing');
+    $('#sheet-content').innerHTML = '';
+    if (neueVersionBereit) swNeuladenWennBereit();   // vorgemerktes Update jetzt evtl. einspielen
+  };
+  if (!magBewegung()) { fertig(); return; }
+  s.classList.add('closing');
+  clearTimeout(sheetCloseTimer);
+  sheetCloseTimer = setTimeout(fertig, 280);
 }
-function showChartTip(dot) {
+/* Die Trefferfläche eines Datenpunkts geht über die volle Charthöhe (Daumen statt
+   Mauszeiger). Der Tooltip richtet sich deshalb am Fingerpunkt aus, nicht an der Fläche. */
+function showChartTip(hit, ev) {
   const tip = $('#chart-tip');
-  tip.textContent = dot.dataset.tip || '';
+  tip.textContent = hit.dataset.tip || '';
   tip.classList.remove('hidden');
-  const r = dot.getBoundingClientRect();
-  tip.style.left = Math.max(8, Math.min(window.innerWidth - tip.offsetWidth - 8, r.left + r.width / 2 - tip.offsetWidth / 2)) + 'px';
-  tip.style.top = Math.max(8, r.top - tip.offsetHeight - 8) + 'px';
+  const r = hit.getBoundingClientRect();
+  const x = (ev && ev.clientX) ? ev.clientX : r.left + r.width / 2;
+  const y = (ev && ev.clientY) ? ev.clientY : r.top;
+  tip.style.left = Math.max(8, Math.min(window.innerWidth - tip.offsetWidth - 8, x - tip.offsetWidth / 2)) + 'px';
+  tip.style.top = Math.max(8, y - tip.offsetHeight - 14) + 'px';
 }
 function hideChartTip() { $('#chart-tip').classList.add('hidden'); }
 
@@ -489,6 +514,10 @@ let editDraft = null;    // Arbeitskopie im Verlauf-Editor
 let statMg = 'Alle';
 let statMode = 'saetze';
 
+/* Eintritts-Animation nur bei echtem Ansichtswechsel — nicht bei jedem Satz-Haken.
+   Wer die Ansicht wechselt, setzt dieses Flag; render() verbraucht es einmal. */
+let viewAnim = false;
+function markViewAnim() { viewAnim = true; }
 function render() {
   document.querySelectorAll('#tabbar .tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   const v = $('#view');
@@ -497,6 +526,12 @@ function render() {
   else if (tab === 'verlauf') v.innerHTML = renderVerlauf();
   else if (tab === 'uebungen') v.innerHTML = renderUebungen();
   else v.innerHTML = renderDaten();
+  v.classList.remove('enter', 'chart-anim');
+  if (viewAnim) {
+    viewAnim = false;
+    void v.offsetWidth;                      // Reflow erzwingen, sonst startet die Animation nicht neu
+    v.classList.add('enter', 'chart-anim');
+  }
   renderTimerBar();
   /* Schwebender Rücksprung zum laufenden (minimierten) Training */
   const rs = $('#wo-ruecksprung');
@@ -518,9 +553,30 @@ function exportOverdue() {
   const ref = S.settings.lastExport || S.workouts[0].startedAt;
   return Date.now() - ref > 7 * TAG_MS;
 }
-function chartCard(title, inner) {
-  return '<div class="card chart-card"><h3>' + esc(title) + '</h3>' + inner + '</div>';
+function chartCard(title, inner, sub) {
+  return '<div class="card chart-card"><h3>' + esc(title) + '</h3>' +
+    (sub ? '<div class="chart-sub">' + esc(sub) + '</div>' : '') + inner + '</div>';
 }
+
+/* ---------- Leerzustände ----------
+   Keine Emojis: die Piktogramme sind dieselben Inline-SVGs wie im Rest der App.
+   Jeder Leerzustand nennt, was fehlt, und wie man es füllt. */
+const LEER_ICONS = {
+  hantel: '<path d="M7 7.5v9M17 7.5v9M7 12h10M3.5 9.5v5M20.5 9.5v5"/>',
+  uhr: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2.5"/>',
+  chart: '<path d="M4 19.5h16"/><path d="M6.5 16.5v-4M11 16.5v-8M15.5 16.5v-5M20 16.5v-9"/>',
+  suche: '<circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l4.5 4.5"/>',
+  pokal: '<path d="M8 4h8v4.5a4 4 0 0 1-8 0z"/><path d="M8 5.5H5.5v1a3 3 0 0 0 3 3M16 5.5h2.5v1a3 3 0 0 1-3 3"/><path d="M12 12.5v3.5M9 20h6M10 16.5h4l.5 3.5h-5z"/>',
+  waage: '<path d="M4.5 19.5V8.5a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v11z"/><path d="M12 10v3M9.5 11.5l2.5 1.5 2.5-1.5"/>'
+};
+function leerHtml(icon, titel, text, aktion) {
+  return '<div class="empty"><div class="e-icon" aria-hidden="true"><svg viewBox="0 0 24 24">' +
+    (LEER_ICONS[icon] || LEER_ICONS.hantel) + '</svg></div>' +
+    '<h4>' + esc(titel) + '</h4><p>' + esc(text) + '</p>' + (aktion || '') + '</div>';
+}
+
+/* Welcher Haken zuletzt gesetzt wurde — die Quittungs-Animation läuft genau einmal. */
+let popSet = null;
 
 /* ---------- Goku-Maskottchen (Coach-Kommentare) ----------
    Erscheint NUR auf der Startseite ohne laufendes Training und in der
@@ -632,28 +688,28 @@ function renderStart() {
   const wpAktiv = WP_TAGE.some(t => S.templates.some(x => x.id === S.wochenplan[t]));
   if (wpHeuteTpl) {
     const heuteErledigt = S.workouts.some(w => w.templateId === wpHeuteTpl.id && w.startedAt >= startOfDay(Date.now()));
-    h += '<div class="card" style="display:flex;align-items:center;gap:10px">' +
+    h += '<div class="card wp-heute">' +
       '<div class="li-main"><div class="li-sub">Heute laut Wochenplan</div><div class="li-title">' + esc(wpHeuteTpl.name) + '</div></div>' +
       (heuteErledigt
-        ? '<span class="tag" style="background:var(--green-soft);color:var(--green);font-size:14px;font-weight:800;padding:7px 13px;margin:0">Erledigt ✓</span>'
+        ? '<span class="tag tag-gruen tag-erledigt">Erledigt ✓</span>'
         : '<button class="btn btn-small btn-primary" data-action="wo-start" data-tpl="' + esc(wpHeuteTpl.id) + '">Start</button>') +
       '</div>';
   } else if (wpAktiv) {
-    h += '<div class="card"><div class="li-sub" style="white-space:normal">Heute laut Wochenplan: <b>Ruhetag</b> — gute Erholung!</div></div>';
+    h += '<div class="card"><div class="li-sub li-sub-wrap">Heute laut Wochenplan: <b>Ruhetag</b> — gute Erholung!</div></div>';
   }
-  h += '<div class="section-title" style="display:flex;align-items:baseline;gap:12px">Meine Workouts<span style="flex:1"></span>' +
-    '<button class="linklike" style="text-transform:none;letter-spacing:0;font-size:13px" data-action="tpl-new">+ Neu</button>' +
-    '<button class="linklike" style="text-transform:none;letter-spacing:0;font-size:13px" data-action="tpl-mehr">Mehr …</button></div>';
+  h += '<div class="section-head"><span class="section-title">Meine Workouts</span>' +
+    '<button class="linklike linklike-sm" data-action="tpl-new">+ Neu</button>' +
+    '<button class="linklike linklike-sm" data-action="tpl-mehr">Mehr …</button></div>';
   h += '<div class="tpl-grid">';
   for (const tpl of S.templates) {
     const letzte = [...S.workouts].reverse().find(w => w.templateId === tpl.id);
     h += '<div class="tpl-wrap">' +
       '<button class="tpl-box" data-action="wo-start" data-tpl="' + esc(tpl.id) + '">' +
       '<div class="tpl-box-name">' + esc(tpl.name) + '</div>' +
-      '<div class="tpl-box-sub">' + tpl.exercises.length + ' Übungen</div>' +
+      '<div class="tpl-box-sub">' + tpl.exercises.length + ' Übungen · ' + saetzeVon(tpl) + ' Sätze</div>' +
       (letzte ? '<div class="tpl-box-sub">zuletzt ' + relTage(letzte.startedAt) + '</div>' : '') +
       '<div class="tpl-box-cta">Starten ›</div></button>' +
-      '<button class="tpl-menu" data-action="tpl-menu" data-id="' + esc(tpl.id) + '" title="Plan-Optionen">⋯</button></div>';
+      '<button class="tpl-menu" data-action="tpl-menu" data-id="' + esc(tpl.id) + '" aria-label="Optionen für ' + esc(tpl.name) + '">⋯</button></div>';
   }
   h += '<button class="tpl-box" data-action="wo-start">' +
     '<div class="tpl-box-name">Freies Training</div><div class="tpl-box-sub">ohne Vorlage</div>' +
@@ -663,11 +719,13 @@ function renderStart() {
     '<div class="tpl-box-cta">Eintragen ›</div></button>';
   h += '</div>';
   if (!S.templates.length) {
-    h += '<div class="card" style="margin-top:12px"><div class="li-sub" style="white-space:normal">Noch keine eigenen Workouts. Lege mit „+ Neu" Vorlagen an (z. B. Push / Pull / Beine) — dann startest du mit einem Tap und siehst pro Übung die Werte vom letzten Mal.</div></div>';
+    h += leerHtml('hantel', 'Noch keine eigenen Workouts',
+      'Lege Vorlagen an (z. B. Push / Pull / Beine) — dann startest du mit einem Tap und siehst pro Übung die Werte vom letzten Mal.',
+      '<button class="btn btn-primary" data-action="tpl-new">Ersten Plan anlegen</button>');
   }
   const wpStatus = wochenplanStatus();
-  h += '<button class="btn btn-block" style="margin-top:10px" data-action="wochenplan">Wochenplan' +
-    (wpStatus.zugewiesen && wpStatus.warnungen ? ' <span class="tag" style="background:var(--orange-soft);color:var(--orange);margin:0 0 0 4px">' + wpStatus.warnungen + ' Hinweise</span>' : '') + '</button>';
+  h += '<button class="btn btn-block wp-btn" data-action="wochenplan">Wochenplan' +
+    (wpStatus.zugewiesen && wpStatus.warnungen ? ' <span class="tag tag-orange">' + wpStatus.warnungen + ' ' + (wpStatus.warnungen === 1 ? 'Hinweis' : 'Hinweise') + '</span>' : '') + '</button>';
   return h;
 }
 
@@ -728,7 +786,7 @@ function volZeile(z) {
   } else if (z.status === 'viel') {
     statusHtml = '<div class="vol-status st-viel">Zu viel: ' + z.diff + ' ' + (z.diff === 1 ? 'Satz' : 'Sätze') + ' über dem sinnvollen Maximum (Übertrainings-Risiko)' + wpHinweis(z.mg, 'viel') + '</div>';
   } else if (z.ist === 0 && z.z.min === 0) {
-    statusHtml = '<div class="vol-status" style="color:var(--text-2)">Optional — nicht im Plan</div>';
+    statusHtml = '<div class="vol-status vol-status-off">Optional — nicht im Plan</div>';
   } else {
     statusHtml = '<div class="vol-status st-ok">Im optimalen Bereich</div>';
   }
@@ -738,25 +796,25 @@ function volZeile(z) {
     '<div class="vol-bar"><div class="vol-zone" style="left:' + zoneL.toFixed(1) + '%;width:' + zoneB.toFixed(1) + '%"></div>' +
     '<div class="vol-fill ' + cls + '" style="width:' + fuellung.toFixed(1) + '%"></div></div>' +
     statusHtml +
-    '<button class="linklike" style="font-size:12.5px;margin-top:6px" data-action="wp-detail" data-mg="' + esc(z.mg) + '">Zusammensetzung anzeigen</button></div>';
+    '<button class="linklike linklike-sm linklike-block" data-action="wp-detail" data-mg="' + esc(z.mg) + '">Zusammensetzung anzeigen</button></div>';
 }
 function renderWochenplan() {
   let h = '<button class="back-btn" data-action="train-home">‹ Training</button><h1 class="view-title">Wochenplan</h1>' +
-    '<div class="mini-note" style="margin:-8px 0 12px 2px">Tippe auf einen Tag, um ihm einen Plan zuzuweisen. Kein Plan = Ruhetag.</div>';
+    '<div class="mini-note mini-note-lead">Tippe auf einen Tag, um ihm einen Plan zuzuweisen. Kein Plan = Ruhetag.</div>';
   const heute = heuteWpTag();
   for (const tag of WP_TAGE) {
     const tpl = S.templates.find(t => t.id === S.wochenplan[tag]);
     h += '<button class="li-item" style="min-height:52px" data-action="wp-tag" data-tag="' + tag + '">' +
-      '<div class="li-main"><div class="li-title" style="font-size:15px">' + WP_LABEL[tag] +
+      '<div class="li-main"><div class="li-title li-title-sm">' + WP_LABEL[tag] +
       (tag === heute ? ' <span class="tag tag-lauf" style="margin-left:4px">heute</span>' : '') + '</div>' +
       '<div class="li-sub">' + (tpl ? esc(tpl.name) : 'Ruhetag') + '</div></div>' +
       (tpl ? '<span class="tag">' + saetzeVon(tpl) + ' Sätze</span>' : '') + '<span class="chev">›</span></button>';
   }
   const st = wochenplanStatus();
   h += '<div class="section-title" style="display:flex;align-items:baseline;gap:10px">Volumen-Analyse (Sätze/Woche) ' +
-    '<button class="linklike" style="font-size:12px;text-transform:none;letter-spacing:0" data-action="wp-info">Wie wird gerechnet?</button></div>';
+    '<button class="linklike linklike-sm" data-action="wp-info">Wie wird gerechnet?</button></div>';
   if (!st.zugewiesen) {
-    h += '<div class="card"><div class="li-sub" style="white-space:normal">Weise mindestens einem Tag einen Plan zu — dann prüfe ich dein Wochenvolumen pro Muskelgruppe gegen die optimalen Bereiche und warne bei zu wenig oder zu viel.</div></div>';
+    h += '<div class="card"><div class="li-sub li-sub-wrap">Weise mindestens einem Tag einen Plan zu — dann prüfe ich dein Wochenvolumen pro Muskelgruppe gegen die optimalen Bereiche und warne bei zu wenig oder zu viel.</div></div>';
   } else {
     st.zeilen.forEach(z => { h += volZeile(z); });
   }
@@ -767,25 +825,41 @@ function renderWochenplan() {
 function renderActiveWorkout() {
   const aw = S.activeWorkout;
   let h = '<div class="wo-header">' +
-    '<button class="btn btn-small" data-action="wo-minimieren" title="Training minimieren">‹</button>' +
+    '<button class="wo-icon-btn" data-action="wo-minimieren" aria-label="Training minimieren">‹</button>' +
     '<div class="wo-name"><h2>' + esc(aw.name) + '</h2>' +
     '<div class="wo-elapsed" id="wo-elapsed">' + fmtDauer((Date.now() - aw.startedAt) / 1000) + '</div></div>' +
-    '<button class="btn btn-small" data-action="wo-menu">⋯</button>' +
-    '<button class="btn btn-small btn-green" data-action="wo-finish">Fertig</button></div>';
+    '<button class="wo-icon-btn" data-action="wo-menu" aria-label="Trainings-Optionen">⋯</button>' +
+    '<button class="btn btn-green" data-action="wo-finish">Fertig</button></div>';
   if (aw.notiz) h += '<div class="info-box">Notiz: ' + esc(aw.notiz) + '</div>';
+  if (!aw.exercises.length) {
+    h += leerHtml('hantel', 'Noch keine Übung',
+      'Freies Training: nimm unten die erste Übung auf. Werte vom letzten Mal werden automatisch vorbelegt.');
+  }
   aw.exercises.forEach((wex, xi) => { h += renderExCard(wex, xi); });
   h += '<button class="btn btn-block btn-soft" data-action="wo-add-ex">+ Übung hinzufügen</button>';
+  popSet = null;   // die Haken-Quittung gilt genau für diesen einen Aufbau
   return h;
+}
+/* Zeigt auf den nächsten offenen Arbeitssatz — damit der Blick nach dem
+   Wegschauen sofort wieder die richtige Zeile findet. */
+function naechsterOffenerSatz(wex) {
+  for (let i = 0; i < wex.sets.length; i++) if (wex.sets[i].done !== true) return i;
+  return -1;
 }
 function renderExCard(wex, xi) {
   const ex = exById(wex.exId);
-  let h = '<div class="ex-card"><div class="ex-head">' + Icons.thumb(ex) + '<div class="ex-title">' + esc(ex.name) + '</div>' +
-    '<button class="linklike" style="font-size:12.5px;flex-shrink:0" data-action="wo-ex-notiz" data-ex="' + xi + '">Notiz</button>' +
-    '<span class="tag" style="margin-right:0">' + esc(ex.mg) + '</span></div>';
+  const naechst = naechsterOffenerSatz(wex);
+  let h = '<div class="ex-card"><div class="ex-head">' + Icons.thumb(ex) +
+    '<div class="ex-title">' + esc(ex.name) +
+    '<div class="ex-title-row"><span class="tag" style="margin-right:0">' + esc(ex.mg) + '</span>' +
+    (wex.ersetztFuer ? '<span class="tag tag-orange" style="margin-right:0">ersetzt ' + esc(exById(wex.ersetztFuer).name) + '</span>' : '') +
+    '</div></div>' +
+    '<button class="wo-icon-btn" data-action="wo-ex-menu" data-ex="' + xi + '" aria-label="Optionen für ' + esc(ex.name) + '">⋯</button>' +
+    '</div>';
   if (ex.hint) h += '<div class="ex-hint">' + esc(ex.hint) + '</div>';
-  if (wex.notiz) h += '<div class="mini-note" style="margin:3px 0 4px">Notiz: ' + esc(wex.notiz) + '</div>';
+  if (wex.notiz) h += '<div class="mini-note">Notiz: ' + esc(wex.notiz) + '</div>';
   const dauerNotiz = (S.exerciseSettings[wex.exId] || {}).notiz;
-  if (dauerNotiz) h += '<div class="mini-note" style="margin:3px 0 4px">Übungs-Notiz: ' + esc(dauerNotiz) + '</div>';
+  if (dauerNotiz) h += '<div class="mini-note">Übungs-Notiz: ' + esc(dauerNotiz) + '</div>';
   const last = lastSessionFor(wex.exId);
   if (last) {
     const ws = workingSets(last.wex);
@@ -794,18 +868,18 @@ function renderExCard(wex, xi) {
     h += '<div class="lastmal">Letztes Mal (' + relTage(last.w.startedAt) + '): <b>' +
       ws.map(s => fmtKg(s.kg) + '×' + s.reps).join(' · ') + '</b>' + avg + '</div>';
   } else {
-    h += '<div class="lastmal">Noch keine früheren Einheiten.</div>';
+    h += '<div class="lastmal">Erste Einheit mit dieser Übung — such dir ein Gewicht, mit dem du die Wiederholungen sauber schaffst.</div>';
   }
   const prog = progressionFor(wex.exId, wex.repMin, wex.repMax);
-  const warum = prog.grund ? ' <button class="linklike" style="font-size:13px" data-action="prog-warum" data-ex="' + xi + '">Warum?</button>' : '';
+  const warum = prog.grund ? '<button class="linklike linklike-sm" data-action="prog-warum" data-ex="' + xi + '">Warum?</button>' : '';
   if (prog.typ === 'neu') {
-    h += '<div style="margin:0 0 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span class="prog-chip neutral" style="margin:0">' + esc(prog.text) + '</span>' + warum + '</div>';
+    h += '<div class="prog-row"><span class="prog-chip neutral">' + esc(prog.text) + '</span>' + warum + '</div>';
   } else {
     const cls = prog.typ === 'plus' ? '' : (prog.typ === 'halten' ? 'halten' : 'neutral');
-    h += '<div style="margin:0 0 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
-      '<button class="prog-chip ' + cls + '" style="margin:0" data-action="prog-apply" data-ex="' + xi + '" data-kg="' + prog.kg + '"' + (prog.reps ? ' data-reps="' + prog.reps + '"' : '') + '>' + esc(prog.text) + '</button>' + warum + '</div>';
+    h += '<div class="prog-row">' +
+      '<button class="prog-chip ' + cls + '" data-action="prog-apply" data-ex="' + xi + '" data-kg="' + prog.kg + '"' + (prog.reps ? ' data-reps="' + prog.reps + '"' : '') + '>' + esc(prog.text) + '</button>' + warum + '</div>';
   }
-  h += '<div class="set-cols"><span></span><span>' + (ex.bw ? '+kg' : 'kg') + '</span><span>Wdh.</span><span>RPE</span><span>✓</span></div>';
+  h += '<div class="set-cols"><span>Satz</span><span>' + (ex.bw ? '+kg' : 'kg') + '</span><span>Wdh.</span><span>RPE</span><span aria-hidden="true">✓</span></div>';
   let wNum = 0;
   wex.sets.forEach((s, si) => {
     const done = s.done === true;
@@ -813,27 +887,27 @@ function renderExCard(wex, xi) {
     const label = s.warmup ? 'W' : String(wNum);
     const dis = done ? ' disabled' : '';
     const ds = ' data-ex="' + xi + '" data-set="' + si + '"';
-    h += '<div class="set-row' + (done ? ' done' : '') + '">' +
-      '<button class="w-toggle' + (s.warmup ? ' on' : '') + '" data-action="set-optionen"' + ds + ' title="Satz-Optionen">' + label + '</button>' +
+    const pop = (popSet === xi + '-' + si) ? ' pop' : '';
+    h += '<div class="set-row' + (done ? ' done' : '') + (si === naechst && !done ? ' next' : '') + '">' +
+      '<button class="w-toggle' + (s.warmup ? ' on' : '') + '" data-action="set-optionen"' + ds + ' aria-label="Optionen für Satz ' + label + '">' + label + '</button>' +
       '<div class="num-group">' +
-      '<button class="step-btn" data-action="step" data-field="kg" data-dir="-1"' + ds + dis + '>−</button>' +
-      '<input class="num-input" inputmode="decimal" autocomplete="off" placeholder="' + (ex.bw ? '+kg' : 'kg') + '" value="' + fmtInput(s.kg) + '" data-winput="kg"' + ds + dis + '>' +
-      '<button class="step-btn" data-action="step" data-field="kg" data-dir="1"' + ds + dis + '>+</button></div>' +
+      '<button class="step-btn" data-action="step" data-field="kg" data-dir="-1"' + ds + dis + ' aria-label="Gewicht verringern">−</button>' +
+      '<input class="num-input" inputmode="decimal" autocomplete="off" aria-label="Gewicht" placeholder="' + (ex.bw ? '+kg' : 'kg') + '" value="' + fmtInput(s.kg) + '" data-winput="kg"' + ds + dis + '>' +
+      '<button class="step-btn" data-action="step" data-field="kg" data-dir="1"' + ds + dis + ' aria-label="Gewicht erhöhen">+</button></div>' +
       '<div class="num-group">' +
-      '<button class="step-btn" data-action="step" data-field="reps" data-dir="-1"' + ds + dis + '>−</button>' +
-      '<input class="num-input" inputmode="numeric" autocomplete="off" placeholder="Wdh" value="' + (s.reps != null ? s.reps : '') + '" data-winput="reps"' + ds + dis + '>' +
-      '<button class="step-btn" data-action="step" data-field="reps" data-dir="1"' + ds + dis + '>+</button></div>' +
-      '<select class="rpe-sel' + (s.rpe ? ' set' : '') + '" data-wsel="rpe"' + ds + dis + '>' +
+      '<button class="step-btn" data-action="step" data-field="reps" data-dir="-1"' + ds + dis + ' aria-label="Wiederholungen verringern">−</button>' +
+      '<input class="num-input" inputmode="numeric" autocomplete="off" aria-label="Wiederholungen" placeholder="Wdh" value="' + (s.reps != null ? s.reps : '') + '" data-winput="reps"' + ds + dis + '>' +
+      '<button class="step-btn" data-action="step" data-field="reps" data-dir="1"' + ds + dis + ' aria-label="Wiederholungen erhöhen">+</button></div>' +
+      '<select class="rpe-sel' + (s.rpe ? ' set' : '') + '" data-wsel="rpe" aria-label="RPE"' + ds + dis + '>' +
       '<option value="">RPE</option>' +
       RPE_WERTE.map(r => '<option value="' + r + '"' + (String(s.rpe) === r ? ' selected' : '') + '>' + r.replace('.', ',') + '</option>').join('') +
       '</select>' +
-      '<button class="check-btn' + (done ? ' done' : '') + '" data-action="check"' + ds + '>✓</button>' +
+      '<button class="check-btn' + (done ? ' done' : '') + pop + '" data-action="check"' + ds + ' aria-label="Satz ' + label + ' abhaken">✓</button>' +
       setInfoLine(s) +
       '</div>';
   });
-  h += '<div style="display:flex;gap:14px;flex-wrap:wrap"><button class="add-set-btn" data-action="set-add" data-ex="' + xi + '">+ Satz</button>' +
-    '<button class="add-set-btn" style="color:var(--text-2)" data-action="set-del" data-ex="' + xi + '">− Satz</button>' +
-    '<button class="add-set-btn tpl-warmup-btn" data-action="wo-warmup" data-ex="' + xi + '">Aufwärmen berechnen</button></div>';
+  h += '<div class="set-tools"><button class="add-set-btn" data-action="set-add" data-ex="' + xi + '">+ Satz</button>' +
+    '<button class="add-set-btn muted" data-action="set-del" data-ex="' + xi + '">− Satz</button></div>';
   return h + '</div>';
 }
 function setInfoLine(s) {
@@ -945,16 +1019,36 @@ function checkSet(xi, si) {
   const bests = prBests(wex.exId, earlier);
   s.done = true;
   s.doneAt = now;
+  popSet = xi + '-' + si;          // Haken quittiert den Treffer beim nächsten Aufbau
   const pr = prGegen(bests, s);
   if (pr) {
     s.pr = pr.typ;
     showToast(pr.text, 'pr');
-    burstConfetti();
+    /* Erst die Meldung lesbar, dann die Feier — nicht beides auf einmal */
+    setTimeout(burstConfetti, 120);
   }
   /* Pause starten */
-  aw.rest = { startedAt: now, targetSec: restTarget(wex.exId, wex.restSec), exIdx: xi, setIdx: si, signaled: false };
+  aw.rest = { startedAt: now, targetSec: restTarget(wex.exId, wex.restSec), exIdx: xi, setIdx: si, signaled: false, manuell: false };
   pauseWach();   // Wake Lock (Standard) bzw. stille Schleife (Opt-in "Signal bei gesperrtem Handy")
   pushPlanen(aw.rest.targetSec);   // Weckruf über den Worker (falls Pausen-Push aktiv)
+  save();
+  render();
+}
+
+/* --- Freie Pause: Timer starten, ohne einen Satz abzuhaken ---
+   exIdx/setIdx bleiben -1: es gibt keinen Satz, dem diese Pause zugerechnet wird.
+   Alle Verbraucher (endRest, checkSet) sind gegen fehlende Indizes abgesichert. */
+function startRest(sec, manuell) {
+  const aw = S.activeWorkout;
+  if (!aw) return;
+  sec = Math.max(10, Math.min(3600, Math.round(sec)));
+  closeSheet();
+  Signal.unlock();               // Audio in dieser Nutzer-Geste entsperren (iOS)
+  notifyErlaubnisAnfragen();
+  if (aw.rest) pushStorno();     // eine bereits geplante Meldung gilt nicht mehr
+  aw.rest = { startedAt: Date.now(), targetSec: sec, exIdx: -1, setIdx: -1, signaled: false, manuell: !!manuell };
+  pauseWach();
+  pushPlanen(sec);
   save();
   render();
 }
@@ -967,7 +1061,11 @@ function finishWorkout() {
       kg: s.kg, reps: s.reps, rpe: s.rpe || null, warmup: !!s.warmup, doneAt: s.doneAt,
       restSec: s.restSec != null ? s.restSec : null
     }));
-    if (sets.length) cleaned.push({ exId: wex.exId, repMin: wex.repMin, repMax: wex.repMax, notiz: wex.notiz || '', sets });
+    if (sets.length) cleaned.push({
+      exId: wex.exId, repMin: wex.repMin, repMax: wex.repMax, notiz: wex.notiz || '',
+      ersetztFuer: wex.ersetztFuer || null,   // wofür diese Übung im Training eingesprungen ist
+      sets
+    });
   }
   /* Dauer deckeln: wird ein liegengebliebenes Training erst Stunden später beendet,
      zählt der letzte abgehakte Satz (+ Puffer) als Ende, nicht "jetzt". */
@@ -995,12 +1093,14 @@ function finishWorkout() {
     const diff = planUpdateDiff(tpl, w);
     if (diff.struktur || diff.werte) {
       planUpdate = { tplId: tpl.id, workoutId: w.id };
+      const punkte = planAbweichungen(tpl, w, diff);
       openSheet('<div class="sheet-title">Plan „' + esc(tpl.name) + '" aktualisieren?</div>' +
-        '<div class="sheet-sub">Dein heutiges Training weicht vom Plan ab' +
-        (diff.struktur ? ' — auch bei Übungen bzw. Satzanzahl.' : ' — bei Wiederholungen/Gewichten.') + '</div>' +
+        '<div class="sheet-sub">Dein Training weicht ab. Der Plan bleibt unverändert, wenn du nichts übernimmst.</div>' +
+        '<div class="card diff-liste">' + punkte.map(p =>
+          '<div class="diff-zeile"><span class="diff-punkt" aria-hidden="true"></span><span>' + p + '</span></div>').join('') + '</div>' +
         '<div class="sheet-actions">' +
         (diff.struktur ? '<button class="btn btn-primary" data-action="pu-struktur">Struktur &amp; Werte übernehmen</button>' : '') +
-        '<button class="btn' + (diff.struktur ? '' : ' btn-primary') + '" data-action="pu-werte">Nur Werte übernehmen (Wdh./Gewichte)</button>' +
+        '<button class="btn' + (diff.struktur ? '' : ' btn-primary') + '" data-action="pu-werte">Nur Wdh. und Gewichte übernehmen</button>' +
         '<button class="btn" data-action="pu-keep">Plan so lassen</button></div>');
     }
   }
@@ -1037,6 +1137,37 @@ function planUpdateDiff(tpl, w) {
     });
   });
   return { struktur, werte };
+}
+/* Was genau weicht ab? Der Dialog soll den Unterschied benennen, nicht andeuten —
+   sonst entscheidet man blind, ob der Plan überschrieben wird. */
+function planAbweichungen(tpl, w, diff) {
+  const punkte = [];
+  const ersetzt = w.exercises.filter(e => e.ersetztFuer && exById(e.ersetztFuer));
+  ersetzt.forEach(e => punkte.push('<b>' + esc(exById(e.ersetztFuer).name) + '</b> ersetzt durch <b>' +
+    esc(exById(e.exId).name) + '</b>'));
+  const tplIds = tpl.exercises.map(it => it.exId);
+  const woIds = w.exercises.map(e => e.exId);
+  woIds.forEach(id => {
+    if (tplIds.indexOf(id) < 0 && !ersetzt.some(e => e.exId === id)) {
+      punkte.push('<b>' + esc(exById(id).name) + '</b> zusätzlich trainiert');
+    }
+  });
+  tplIds.forEach(id => {
+    if (woIds.indexOf(id) < 0 && !ersetzt.some(e => e.ersetztFuer === id)) {
+      punkte.push('<b>' + esc(exById(id).name) + '</b> heute nicht trainiert');
+    }
+  });
+  /* Satzanzahl je Übung, die im Plan und im Training vorkommt */
+  tpl.exercises.forEach(it => {
+    const wex = w.exercises.find(e => e.exId === it.exId);
+    if (!wex) return;
+    const soll = it.sets.filter(s => !s.warmup).length;
+    const ist = wex.sets.filter(s => !s.warmup).length;
+    if (soll !== ist) punkte.push('<b>' + esc(exById(it.exId).name) + '</b> — ' + ist + ' statt ' + soll + ' Arbeitssätze');
+  });
+  if (diff.werte) punkte.push('Wiederholungen bzw. Gewichte weichen vom Plan ab');
+  if (!punkte.length) punkte.push('Kleinere Abweichungen gegenüber dem Plan');
+  return punkte;
 }
 /* Wdh. (und kg nur dort, wo der Plan bereits explizite Gewichte hatte) übernehmen */
 function tplWerteUpdate(tpl, w) {
@@ -1183,22 +1314,44 @@ function renderTimerBar() {
   const bar = $('#timer-bar');
   const rs = $('#wo-ruecksprung');
   const aw = S.activeWorkout;
-  if (!aw || !aw.rest) {
+  /* Läuft eine Pause, zeigt die Leiste sie überall. Läuft keine, zeigt sie in der
+     Trainingsansicht die Schnellwahl — so wohnt die Pausensteuerung immer am selben Ort. */
+  const inTrainingsansicht = !!aw && tab === 'start' && zeigeWorkout;
+  if (!aw || (!aw.rest && !inTrainingsansicht)) {
     bar.classList.add('hidden');
+    bar.classList.remove('idle', 'over');
     if (rs) rs.style.bottom = 'calc(64px + env(safe-area-inset-bottom))';
     return;
   }
-  bar.classList.remove('hidden');
+  if (!aw.rest) {
+    bar.classList.remove('hidden', 'over');
+    bar.classList.add('idle');
+    if (rs) rs.style.bottom = 'calc(64px + env(safe-area-inset-bottom))';
+    return;
+  }
+  bar.classList.remove('hidden', 'idle');
   if (rs) rs.style.bottom = 'calc(132px + env(safe-area-inset-bottom))';
   const el = (Date.now() - aw.rest.startedAt) / 1000;
   const t = aw.rest.targetSec;
   const over = el >= t;
+  /* Der Puls am Pausenende soll genau einmal laufen, nicht bei jedem Tick */
+  const warOver = bar.classList.contains('over');
   bar.classList.toggle('over', over);
-  $('#timer-progress').style.width = Math.min(100, el / t * 100) + '%';
+  if (over && !warOver && magBewegung()) {
+    const row = bar.querySelector('.timer-row');
+    if (row) { row.style.animation = 'none'; void row.offsetWidth; row.style.animation = ''; }
+  }
+  /* scaleX statt width: keine Layout-Neuberechnung, obwohl der Balken 2×/s tickt.
+     Am Anfang einer Pause ohne Übergang setzen, sonst kurbelt der Balken zurück. */
+  const p = $('#timer-progress');
+  const anteil = Math.min(1, el / t);
+  if (anteil < 0.04) { p.style.transition = 'none'; p.style.transform = 'scaleX(' + anteil.toFixed(4) + ')'; void p.offsetWidth; p.style.transition = ''; }
+  else p.style.transform = 'scaleX(' + anteil.toFixed(4) + ')';
   const gesamt = ' · Training ' + fmtDauer((Date.now() - aw.startedAt) / 1000);
+  const label = aw.rest.manuell ? 'Freie Pause' : 'Ziel';
   $('#timer-text').innerHTML = over
     ? 'Pause vorbei <small>+' + fmtMinSek(el - t) + gesamt + '</small>'
-    : fmtMinSek(t - el) + ' <small>Ziel ' + fmtMinSek(t) + gesamt + '</small>';
+    : fmtMinSek(t - el) + ' <small>' + label + ' ' + fmtMinSek(t) + gesamt + '</small>';
   if (over && !aw.rest.signaled) {
     aw.rest.signaled = true;
     save();
@@ -1231,11 +1384,11 @@ function renderPlaene() {
   let h = '<button class="back-btn" data-action="train-home">‹ Training</button>';
   h += '<div style="display:flex;align-items:flex-start;gap:10px">' +
     '<h1 class="view-title" style="flex:1">Trainingspläne</h1>' +
-    (S.templates.length ? '<button class="btn btn-small' + (auswahl ? ' btn-primary' : '') + '" style="margin-top:6px" data-action="tpl-select-mode">' + (auswahl ? 'Fertig' : 'Auswählen') + '</button>' : '') +
+    (S.templates.length ? '<button class="btn btn-small' + (auswahl ? ' btn-primary' : '') + ' mt-s" data-action="tpl-select-mode">' + (auswahl ? 'Fertig' : 'Auswählen') + '</button>' : '') +
     '</div>';
   if (!S.templates.length) h += '<div class="empty"><p>Noch keine Pläne.<br>Erstelle z. B. „Push A" mit deinen Übungen und Ziel-Wiederholungsbereichen.</p></div>';
   if (auswahl) {
-    h += '<div class="mini-note" style="margin:-8px 0 10px 2px">' + auswahl.size + ' ausgewählt · ' +
+    h += '<div class="mini-note mini-note-lead">' + auswahl.size + ' ausgewählt · ' +
       '<button class="linklike" data-action="tpl-select-all">' + (auswahl.size === S.templates.length ? 'Keine' : 'Alle') + ' auswählen</button></div>';
   }
   for (const tpl of S.templates) {
@@ -1250,25 +1403,25 @@ function renderPlaene() {
     }
   }
   if (auswahl) {
-    h += '<div class="row-2" style="margin-top:14px">' +
+    h += '<div class="row-2 mt-l">' +
       '<button class="btn btn-danger" data-action="tpl-bulk-del">Löschen</button>' +
       '<button class="btn" data-action="tpl-bulk-export">Exportieren</button>' +
       '<button class="btn" data-action="tpl-bulk-dup">Duplizieren</button></div>';
   } else {
-    h += '<button class="btn btn-block btn-primary" style="margin-top:8px" data-action="tpl-new">+ Neuer Plan</button>';
-    if (S.workouts.length) h += '<button class="btn btn-block btn-soft" style="margin-top:10px" data-action="tpl-derive">Pläne aus dem Verlauf erstellen</button>';
-    h += '<button class="btn btn-block" style="margin-top:10px" data-action="tpl-import-open">Pläne importieren…</button>';
+    h += '<button class="btn btn-block btn-primary mt-s" data-action="tpl-new">+ Neuer Plan</button>';
+    if (S.workouts.length) h += '<button class="btn btn-block btn-soft mt-m" data-action="tpl-derive">Pläne aus dem Verlauf erstellen</button>';
+    h += '<button class="btn btn-block mt-m" data-action="tpl-import-open">Pläne importieren…</button>';
   }
   return h;
 }
 function renderTplEditor() {
   const d = tplDraft;
   let h = '<button class="back-btn" data-action="train-home">‹ Zurück</button>' +
-    '<h1 class="view-title" style="font-size:24px">' + (d.id ? 'Plan bearbeiten' : 'Neuer Plan') + '</h1>' +
+    '<h1 class="view-title view-title-sm">' + (d.id ? 'Plan bearbeiten' : 'Neuer Plan') + '</h1>' +
     '<div class="form-row"><label>Name</label><input class="input" value="' + esc(d.name) + '" placeholder="z. B. Push A" data-tinput="name"></div>' +
     '<div class="section-title">Übungen</div>';
-  if (d.exercises.length) h += '<div class="mini-note" style="margin:-4px 0 10px 2px">Gewicht leer = beim Training vom letzten Mal übernommen. Tipp auf die Zahl links, um einen Satz als Aufwärmsatz (W) zu markieren — Aufwärmsätze zählen nicht in die Statistik.</div>';
-  if (!d.exercises.length) h += '<div class="card"><div class="li-sub" style="white-space:normal">Noch keine Übungen im Plan.</div></div>';
+  if (d.exercises.length) h += '<div class="mini-note mini-note-lead">Gewicht leer = beim Training vom letzten Mal übernommen. Tipp auf die Zahl links, um einen Satz als Aufwärmsatz (W) zu markieren — Aufwärmsätze zählen nicht in die Statistik.</div>';
+  if (!d.exercises.length) h += '<div class="card"><div class="li-sub li-sub-wrap">Noch keine Übungen im Plan.</div></div>';
   d.exercises.forEach((it, i) => {
     const ex = exById(it.exId);
     h += '<div class="tpl-ex-card"><div class="tpl-ex-head">' +
@@ -1277,7 +1430,7 @@ function renderTplEditor() {
       '<div class="tpl-ex-tools">' +
       '<button class="icon-btn" data-action="tpl-ex-up" data-i="' + i + '">↑</button>' +
       '<button class="icon-btn" data-action="tpl-ex-down" data-i="' + i + '">↓</button>' +
-      '<button class="icon-btn" style="background:var(--red-soft);color:var(--red)" data-action="tpl-ex-del" data-i="' + i + '">×</button>' +
+      '<button class="icon-btn icon-btn-danger" data-action="tpl-ex-del" data-i="' + i + '">×</button>' +
       '</div></div>';
     let satzN = 0;
     it.sets.forEach((st, j) => {
@@ -1299,7 +1452,7 @@ function renderTplEditor() {
       '</div></div>';
   });
   h += '<button class="btn btn-block btn-soft" data-action="tpl-add-ex">+ Übung hinzufügen</button>' +
-    '<div class="row-2" style="margin-top:16px"><button class="btn btn-primary" data-action="tpl-save">Speichern</button>' +
+    '<div class="row-2 mt-l"><button class="btn btn-primary" data-action="tpl-save">Speichern</button>' +
     (d.id ? '<button class="btn btn-danger" data-action="tpl-del">Löschen</button>' : '') + '</div>';
   return h;
 }
@@ -1308,7 +1461,7 @@ function renderTplEditor() {
 function openExercisePicker(cb) {
   pickerCb = cb;
   openSheet('<div class="sheet-title">Übung wählen</div>' +
-    '<input class="input" placeholder="Suchen…" data-pinput="q" style="margin-bottom:10px">' +
+    '<input class="input" placeholder="Suchen…" data-pinput="q" class="mb-m">' +
     '<div id="picker-list">' + pickerListHtml('') + '</div>');
 }
 function pickerListHtml(q) {
@@ -1323,7 +1476,7 @@ function pickerListHtml(q) {
     for (const e of items) {
       h += '<button class="li-item" style="min-height:48px;padding:9px 14px" data-action="pick-ex" data-id="' + esc(e.id) + '">' +
         Icons.thumb(e) +
-        '<div class="li-main"><div class="li-title" style="font-size:15px">' + esc(e.name) + '</div></div>' +
+        '<div class="li-main"><div class="li-title li-title-sm">' + esc(e.name) + '</div></div>' +
         '<span class="tag">' + esc(e.eq) + '</span></button>';
     }
   }
@@ -1335,30 +1488,41 @@ function renderVerlauf() {
   if (verlaufSub) return renderWorkoutDetail();
   let h = '<h1 class="view-title">Verlauf</h1>';
   if (!S.workouts.length && !S.runs.length) {
-    return h + '<div class="empty"><p>Noch keine Trainings.<br>Starte dein erstes Workout über den Start-Tab.</p></div>';
+    return h + leerHtml('uhr', 'Noch keine Einträge',
+      'Sobald du dein erstes Training beendest, sammelt sich hier deine Historie — nach Monaten sortiert, mit Dauer, Volumen und Rekorden.');
   }
   const prByWorkout = {};
   allPrEvents().forEach(ev => { prByWorkout[ev.w.id] = (prByWorkout[ev.w.id] || 0) + 1; });
   const eintraege = S.workouts.map(w => ({ t: w.startedAt, w }))
     .concat(S.runs.map(r => ({ t: r.startedAt, r })))
     .sort((a, b) => b.t - a.t);
+  /* Kurzdatum reicht: die Monatsüberschrift trägt Monat und Jahr bereits. */
+  const kurzTag = ms => new Date(ms).toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric' });
   let lastMonat = null;
   for (const e of eintraege) {
     const monat = fmtMonat(e.t);
     if (monat !== lastMonat) { h += '<div class="month-hd">' + esc(monat) + '</div>'; lastMonat = monat; }
     if (e.w) {
       const w = e.w;
-      const dauer = w.finishedAt ? fmtDauer((w.finishedAt - w.startedAt) / 1000) : '';
+      const dauer = w.finishedAt ? fmtDauer((w.finishedAt - w.startedAt) / 1000) : '–';
       const prs = prByWorkout[w.id];
+      /* Umbrechende Meta-Zeile statt einer abgeschnittenen: das Volumen ist die
+         interessanteste Zahl der Zeile und darf nicht der Ellipse zum Opfer fallen. */
       h += '<button class="li-item" data-action="wo-open" data-id="' + esc(w.id) + '">' +
         '<div class="li-main"><div class="li-title">' + esc(w.name) + '</div>' +
-        '<div class="li-sub">' + fmtDatumLang(w.startedAt) + ' · ' + dauer + ' · ' + workoutSetCount(w) + ' Sätze · ' + fmtVol(workoutVolume(w)) + '</div></div>' +
+        '<div class="meta-row"><span>' + kurzTag(w.startedAt) + '</span>' +
+        '<span class="m-num">' + dauer + '</span>' +
+        '<span class="m-num">' + workoutSetCount(w) + ' Sätze</span>' +
+        '<span class="m-num">' + fmtVol(workoutVolume(w)) + '</span></div></div>' +
         (prs ? '<span class="badge-pr">' + prs + '× PR</span>' : '') + '<span class="chev">›</span></button>';
     } else {
       const r = e.r;
       h += '<button class="li-item" data-action="run-open" data-id="' + esc(r.id) + '">' +
         '<div class="li-main"><div class="li-title">Lauf' + (r.notiz ? ' · ' + esc(r.notiz) : '') + '</div>' +
-        '<div class="li-sub">' + fmtDatumLang(r.startedAt) + ' · ' + fmtKg(r.distanzKm) + ' km · ' + fmtDauer(r.dauerSec) + ' · ' + fmtPace(r.dauerSec / r.distanzKm) + '</div></div>' +
+        '<div class="meta-row"><span>' + kurzTag(r.startedAt) + '</span>' +
+        '<span class="m-num">' + fmtKg(r.distanzKm) + ' km</span>' +
+        '<span class="m-num">' + fmtDauer(r.dauerSec) + '</span>' +
+        '<span class="m-num">' + fmtPace(r.dauerSec / r.distanzKm) + '</span></div></div>' +
         '<span class="tag tag-lauf">Lauf</span><span class="chev">›</span></button>';
     }
   }
@@ -1404,7 +1568,7 @@ function renderWorkoutDetail() {
   if (editDraft) return renderWorkoutEdit();
   const prSets = new Set(allPrEvents().filter(ev => ev.w.id === w.id).map(ev => ev.set));
   let h = '<button class="back-btn" data-action="verlauf-home">‹ Verlauf</button>' +
-    '<h1 class="view-title" style="font-size:24px">' + esc(w.name) +
+    '<h1 class="view-title view-title-sm">' + esc(w.name) +
     '<small>' + fmtDatumLang(w.startedAt) + ', ' + fmtUhrzeit(w.startedAt) + ' Uhr</small></h1>';
   h += '<div class="stat-grid stat-grid-3">' +
     '<div class="stat-tile"><div class="stat-val">' + (w.finishedAt ? fmtDauer((w.finishedAt - w.startedAt) / 1000) : '–') + '</div><div class="stat-lab">Dauer</div></div>' +
@@ -1432,25 +1596,25 @@ function renderWorkoutDetail() {
   if (w.notiz) h += '<div class="info-box">Notiz: ' + esc(w.notiz) + '</div>';
   if (stravaVerbunden()) {
     h += w.stravaId
-      ? '<div class="mini-note" style="margin-bottom:8px">Auf Strava gepostet ✓</div>'
-      : '<button class="btn btn-block" style="margin-bottom:10px" data-action="strava-post-wo" data-id="' + esc(w.id) + '">Auf Strava posten</button>';
+      ? '<div class="mini-note mb-s">Auf Strava gepostet ✓</div>'
+      : '<button class="btn btn-block mb-m" data-action="strava-post-wo" data-id="' + esc(w.id) + '">Auf Strava posten</button>';
   }
-  h += '<div class="row-2" style="margin-top:6px"><button class="btn" data-action="wo-edit">Bearbeiten</button>' +
+  h += '<div class="row-2 mt-s"><button class="btn" data-action="wo-edit">Bearbeiten</button>' +
     '<button class="btn btn-danger" data-action="wo-delete">Löschen</button></div>';
   return h;
 }
 function renderWorkoutEdit() {
   const d = editDraft;
   let h = '<button class="back-btn" data-action="wo-edit-cancel">‹ Abbrechen</button>' +
-    '<h1 class="view-title" style="font-size:24px">Training bearbeiten</h1>' +
+    '<h1 class="view-title view-title-sm">Training bearbeiten</h1>' +
     '<div class="form-row"><label>Name</label><input class="input" value="' + esc(d.name) + '" data-einput="name"></div>' +
     '<div class="row-2"><div class="form-row"><label>Datum</label><input type="date" class="input" value="' + todayStr(new Date(d.startedAt)) + '" data-einput="datum"></div>' +
     '<div class="form-row"><label>Uhrzeit</label><input type="time" class="input" value="' + fmtUhrzeit(d.startedAt) + '" data-einput="zeit"></div></div>' +
-    '<div class="mini-note" style="margin:-6px 0 12px">Spalten: Aufwärmsatz · kg · Wdh. · RPE · Pause (s)</div>';
+    '<div class="mini-note mini-note-lead">Spalten: Aufwärmsatz · kg · Wdh. · RPE · Pause (s)</div>';
   d.exercises.forEach((wex, xi) => {
     const ex = exById(wex.exId);
     h += '<div class="card"><div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
-      '<div class="li-title" style="flex:1;font-size:15px">' + esc(ex.name) + '</div>' +
+      '<div class="li-title li-title-sm li-title-flex">' + esc(ex.name) + '</div>' +
       '<button class="del-btn" data-action="edit-ex-del" data-x="' + xi + '">×</button></div>';
     wex.sets.forEach((s, si) => {
       const dx = ' data-x="' + xi + '" data-s="' + si + '"';
@@ -1466,7 +1630,7 @@ function renderWorkoutEdit() {
     h += '<button class="add-set-btn" data-action="edit-set-add" data-x="' + xi + '">+ Satz</button></div>';
   });
   h += '<button class="btn btn-block btn-soft" data-action="edit-ex-add">+ Übung hinzufügen</button>' +
-    '<button class="btn btn-block btn-primary" style="margin-top:14px" data-action="wo-edit-save">Speichern</button>';
+    '<button class="btn btn-block btn-primary mt-l" data-action="wo-edit-save">Speichern</button>';
   return h;
 }
 function saveWorkoutEdit() {
@@ -1510,13 +1674,14 @@ function saveWorkoutEdit() {
 function renderUebungen() {
   if (uebSub) return renderUebungDetail();
   let h = '<h1 class="view-title">Übungen</h1>' +
-    '<input class="input" placeholder="Übung suchen…" value="' + esc(uebFilter.q) + '" data-finput="q" style="margin-bottom:10px">' +
+    '<div class="such-feld"><svg class="such-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l4.5 4.5"/></svg>' +
+    '<input class="input" type="search" aria-label="Übung suchen" placeholder="Übung suchen…" value="' + esc(uebFilter.q) + '" data-finput="q"></div>' +
     '<div class="chip-row">' + ['Alle'].concat(MGS).map(m =>
       '<button class="chip' + ((uebFilter.mg || 'Alle') === m ? ' active' : '') + '" data-action="filter-mg" data-mg="' + esc(m) + '">' + esc(m) + '</button>').join('') + '</div>' +
     '<div class="chip-row">' + ['Alle Geräte'].concat(EQS).map(m =>
       '<button class="chip' + ((uebFilter.eq || 'Alle Geräte') === m ? ' active' : '') + '" data-action="filter-eq" data-eq="' + esc(m) + '">' + esc(m) + '</button>').join('') + '</div>' +
     '<div id="ueb-list">' + uebListHtml() + '</div>' +
-    '<button class="btn btn-block btn-soft" style="margin-top:6px" data-action="cu-new">+ Eigene Übung</button>';
+    '<button class="btn btn-block btn-soft" data-action="cu-new">+ Eigene Übung</button>';
   return h;
 }
 function uebListHtml() {
@@ -1540,13 +1705,15 @@ function uebListHtml() {
       }
       h += '<button class="li-item" data-action="ueb-open" data-id="' + esc(e.id) + '">' +
         Icons.thumb(e) +
-        '<div class="li-main"><div class="li-title" style="font-size:15px">' + esc(e.name) +
+        '<div class="li-main"><div class="li-title li-title-sm">' + esc(e.name) +
         (e.id.indexOf('cu-') === 0 ? ' <span class="tag">eigene</span>' : '') + '</div>' +
-        '<div class="li-sub"><span class="tag">' + esc(e.eq) + '</span>' + (e.compound ? '<span class="tag">Grundübung</span>' : '') + '</div></div>' +
-        '<div class="li-side">' + side + '</div><span class="chev">›</span></button>';
+        '<div class="meta-row"><span>' + esc(e.eq) + '</span>' + (e.compound ? '<span>Grundübung</span>' : '') + '</div></div>' +
+        (side ? '<div class="li-side">' + side + '</div>' : '') + '<span class="chev">›</span></button>';
     }
   }
-  return h || '<div class="empty"><p>Keine Übung gefunden</p></div>';
+  return h || leerHtml('suche', 'Keine Übung gefunden',
+    'Kein Treffer für diese Kombination aus Suche und Filtern. Setz die Filter zurück oder leg die Übung selbst an.',
+    '<button class="btn" data-action="filter-reset">Filter zurücksetzen</button>');
 }
 function renderUebungDetail() {
   const ex = exById(uebSub.exId);
@@ -1555,45 +1722,54 @@ function renderUebungDetail() {
   const os = S.exerciseSettings[ex.id] || {};
   let h = '<button class="back-btn" data-action="ueb-back">‹ Übungen</button>' +
     '<div class="detail-head">' + Icons.thumb(ex, true) +
-    '<h1 class="view-title" style="font-size:24px;margin:0">' + esc(ex.name) +
+    '<h1 class="view-title view-title-sm view-title-flush">' + esc(ex.name) +
     '<small><span class="tag">' + esc(ex.mg) + '</span><span class="tag">' + esc(ex.eq) + '</span>' +
     (ex.compound ? '<span class="tag">Grundübung</span>' : '') + '</small></h1></div>';
-  if (ex.hint) h += '<div class="ex-hint" style="margin-bottom:10px">' + esc(ex.hint) + '</div>';
+  if (ex.hint) h += '<div class="ex-hint mb-m">' + esc(ex.hint) + '</div>';
   h += '<div class="stat-grid stat-grid-3">' +
     '<div class="stat-tile"><div class="stat-val">' + (bests.maxKg != null ? fmtKg(bests.maxKg) : '–') + '</div><div class="stat-lab">Max. kg' + (ex.bw ? ' (Zusatz)' : '') + '</div></div>' +
     '<div class="stat-tile"><div class="stat-val">' + (bests.maxE1rm != null ? fmtKg(Math.round(bests.maxE1rm * 10) / 10) : '–') + '</div><div class="stat-lab">e1RM (kg)</div></div>' +
     '<div class="stat-tile"><div class="stat-val">' + sess.length + '</div><div class="stat-lab">Einheiten</div></div></div>';
-  /* Charts */
+  /* Charts. Einheiten, in denen ein Rekord fiel, bekommen einen goldenen Punkt —
+     damit die Kurve zeigt, wo etwas passiert ist, statt nur zu steigen. */
+  const prWorkouts = new Set(allPrEvents().filter(evn => evn.exId === ex.id).map(evn => evn.w.id));
+  /* Marken nur, solange sie selten sind. Wer linear steigert, hat in fast jeder
+     Einheit einen Rekord — dann markiert Gold nichts mehr, sondern verdeckt die Linie. */
+  const prMarken = sess.length > 3 && prWorkouts.size / sess.length <= 0.34;
+  const prHinweis = prMarken ? ' · Gold = Rekord' : '';
   const mk = (fn, einheit) => sess.map(({ w, wex }) => {
     const v = fn(wex);
+    const istPr = prWorkouts.has(w.id);
     return v == null ? null : {
-      x: w.startedAt, xLabel: fmtDatumKurz(w.startedAt), y: v,
-      tip: fmtDatumKurz(w.startedAt) + ': ' + fmtKg(Math.round(v * 10) / 10) + ' ' + einheit
+      x: w.startedAt, xLabel: fmtDatumKurz(w.startedAt), y: v, pr: prMarken && istPr,
+      tip: fmtDatumLang(w.startedAt) + ' · ' + fmtKg(Math.round(v * 10) / 10) + ' ' + einheit + (istPr ? ' · Rekord' : '')
     };
   }).filter(Boolean);
   const nurKoerpergewicht = ex.bw && !sess.some(({ wex }) => workingSets(wex).some(s => s.kg > 0));
   if (nurKoerpergewicht) {
-    h += chartCard('Wiederholungen (bester Satz)', Charts.lineChart({
+    h += chartCard('Wiederholungen', Charts.lineChart({
       points: mk(wex => { const r = workingSets(wex).map(s => s.reps); return r.length ? Math.max(...r) : null; }, 'Wdh.'),
-      leer: 'Noch keine Einheiten'
-    }));
+      einheit: 'Wdh.', leer: 'Noch keine Einheiten'
+    }), 'bester Satz je Einheit' + prHinweis);
   } else {
-    h += chartCard('Geschätztes 1RM (Epley)', Charts.lineChart({
+    h += chartCard('Geschätztes 1RM', Charts.lineChart({
       points: mk(wex => {
         const es = workingSets(wex).map(s => e1rmOf(s.kg, s.reps)).filter(x => x != null);
         return es.length ? Math.max(...es) : null;
-      }, 'kg'), leer: 'Noch keine Einheiten'
-    }));
+      }, 'kg'), einheit: 'kg', leer: 'Noch keine Einheiten'
+    }), 'nach Epley' + prHinweis);
     h += chartCard('Top-Satz-Gewicht', Charts.lineChart({
-      points: mk(wex => { const t = topSet(workingSets(wex)); return t ? t.kg : null; }, 'kg'), leer: 'Noch keine Einheiten'
-    }));
+      points: mk(wex => { const t = topSet(workingSets(wex)); return t ? t.kg : null; }, 'kg'),
+      einheit: 'kg', leer: 'Noch keine Einheiten'
+    }), 'schwerster Arbeitssatz je Einheit');
   }
-  h += chartCard('Volumen pro Einheit', Charts.lineChart({
-    points: mk(wex => workingSets(wex).reduce((a, s) => a + setVolume(s), 0) || null, 'kg'), leer: 'Noch keine Einheiten'
-  }));
+  h += chartCard('Volumen', Charts.lineChart({
+    points: mk(wex => workingSets(wex).reduce((a, s) => a + setVolume(s), 0) || null, 'kg'),
+    einheit: 'kg', leer: 'Noch keine Einheiten'
+  }), 'kg × Wiederholungen, je Einheit');
   /* Übungs-Einstellungen */
   h += '<div class="section-title">Einstellungen</div>' +
-    '<div class="setting-row"><div class="li-main"><div class="li-title" style="font-size:15px">Pausenziel</div>' +
+    '<div class="setting-row"><div class="li-main"><div class="li-title li-title-sm">Pausenziel</div>' +
     '<div class="li-sub">leer = Standard (' + pauseStandard(ex.id) + ' s' + (S.settings.coach !== false ? ' · Coach: ' + esc(Coach.info(ex).label) : '') + ')</div></div>' +
     '<input class="input-mini" inputmode="numeric" placeholder="auto" value="' + (os.restSec || '') + '" data-exset="restSec" data-id="' + esc(ex.id) + '"><span class="li-sub">s</span></div>' +
     '<div class="form-row"><label>Notiz (z. B. Sitzeinstellung, Griffbreite)</label>' +
@@ -1603,74 +1779,123 @@ function renderUebungDetail() {
   if (!sess.length) h += '<div class="empty"><p>Noch keine Einheiten mit dieser Übung.</p></div>';
   [...sess].reverse().slice(0, 20).forEach(({ w, wex }) => {
     h += '<div class="card" style="padding:10px 14px"><div class="li-sub" style="margin-bottom:2px">' + fmtDatumLang(w.startedAt) + '</div>' +
-      '<div class="li-title" style="font-size:15px">' +
+      '<div class="li-title li-title-sm">' +
       wex.sets.map(s => (s.warmup ? '(' : '') + fmtKg(s.kg) + '×' + s.reps + (s.warmup ? ')' : '')).join(' · ') + '</div></div>';
   });
   if (ex.id.indexOf('cu-') === 0) {
-    h += '<button class="btn btn-block" style="margin-top:10px" data-action="cu-edit" data-id="' + esc(ex.id) + '">Übung bearbeiten (Name, Muskelgruppe, Gerät)</button>';
-    h += '<button class="btn btn-block btn-danger" style="margin-top:10px" data-action="cu-del" data-id="' + esc(ex.id) + '">Eigene Übung löschen</button>';
+    h += '<button class="btn btn-block mt-m" data-action="cu-edit" data-id="' + esc(ex.id) + '">Übung bearbeiten (Name, Muskelgruppe, Gerät)</button>';
+    h += '<button class="btn btn-block btn-danger mt-m" data-action="cu-del" data-id="' + esc(ex.id) + '">Eigene Übung löschen</button>';
   }
   return h;
 }
 
 /* ---------- View: Profil (Dashboard) ---------- */
+/* Kachel-Delta: vorzeichenbehaftet, immer gegen einen benannten Zeitraum.
+   Grün heißt „in die gewünschte Richtung", nicht „positiv". */
+function deltaHtml(diff, text, hochIstGut) {
+  if (diff == null || !isFinite(diff) || Math.abs(diff) < 0.0001) {
+    return '<div class="stat-delta flat">unverändert ' + esc(text) + '</div>';
+  }
+  const gut = hochIstGut === false ? diff < 0 : diff > 0;
+  return '<div class="stat-delta ' + (gut ? 'up' : 'down') + '">' + (diff > 0 ? '+' : '−') +
+    esc(String(fmtKg(Math.abs(Math.round(diff * 10) / 10)))) + ' ' + esc(text) + '</div>';
+}
+/* Bezugsgröße für die laufende Woche: der Schnitt der letzten zwölf abgeschlossenen
+   Wochen. Eine Woche, die erst am Montag begonnen hat, kann nichts „verloren" haben. */
+function schnittProWocheHtml(vorwoche) {
+  const start = weekStartMs(12), ende = weekStartMs(0);
+  const n = S.workouts.filter(w => w.startedAt >= start && w.startedAt < ende).length +
+    S.runs.filter(r => r.startedAt >= start && r.startedAt < ende).length;
+  if (!n) return vorwoche ? '<div class="stat-delta flat">Vorwoche: ' + vorwoche + '</div>' : '';
+  return '<div class="stat-delta flat">Ø ' + fmtKg(Math.round(n / 12 * 10) / 10) + ' pro Woche</div>';
+}
+function statTile(val, lab, delta, blau) {
+  return '<div class="stat-tile' + (blau ? ' stat-blau' : '') + '"><div class="stat-val">' + val + '</div>' +
+    '<div class="stat-lab">' + esc(lab) + '</div>' + (delta || '') + '</div>';
+}
 function renderProfil() {
-  const d30 = Date.now() - 30 * TAG_MS;
-  const wkStart = weekStartMs(0);
-  let ton30 = 0;
-  S.workouts.forEach(w => { if (w.startedAt >= d30) ton30 += workoutVolume(w); });
+  const jetzt = Date.now();
+  const d30 = jetzt - 30 * TAG_MS, d60 = jetzt - 60 * TAG_MS;
+  const wkStart = weekStartMs(0), wkVor = weekStartMs(1);
+  let ton30 = 0, tonVor30 = 0;
+  S.workouts.forEach(w => {
+    if (w.startedAt >= d30) ton30 += workoutVolume(w);
+    else if (w.startedAt >= d60) tonVor30 += workoutVolume(w);
+  });
   const prs = allPrEvents();
   const pr30 = prs.filter(ev => ev.w.startedAt >= d30).length;
+  const prVor30 = prs.filter(ev => ev.w.startedAt >= d60 && ev.w.startedAt < d30).length;
   const gesamt = S.workouts.length + S.runs.length;
   const woche = S.workouts.filter(w => w.startedAt >= wkStart).length + S.runs.filter(r => r.startedAt >= wkStart).length;
+  const wocheVor = S.workouts.filter(w => w.startedAt >= wkVor && w.startedAt < wkStart).length +
+    S.runs.filter(r => r.startedAt >= wkVor && r.startedAt < wkStart).length;
   const km30 = S.runs.filter(r => r.startedAt >= d30).reduce((a, r) => a + r.distanzKm, 0);
-  let h = '<h1 class="view-title">Profil</h1>' + warnHtml() +
-    '<div class="stat-grid">' +
-    '<div class="stat-tile stat-blau"><div class="stat-val">' + gesamt + '</div><div class="stat-lab">Trainings gesamt</div></div>' +
-    '<div class="stat-tile stat-blau"><div class="stat-val">' + woche + '</div><div class="stat-lab">diese Woche</div></div>' +
-    '<div class="stat-tile"><div class="stat-val">' + fmtVol(ton30) + '</div><div class="stat-lab">Volumen (30 Tage)</div></div>' +
-    '<div class="stat-tile"><div class="stat-val">' + pr30 + '</div><div class="stat-lab">PRs (30 Tage)</div></div></div>';
+  const kmVor30 = S.runs.filter(r => r.startedAt >= d60 && r.startedAt < d30).reduce((a, r) => a + r.distanzKm, 0);
+
+  let h = '<h1 class="view-title">Profil</h1>' + warnHtml();
+  if (!S.workouts.length && !S.runs.length) {
+    return h + leerHtml('chart', 'Noch nichts zu zeigen',
+      'Sobald du trainierst, entstehen hier deine Kennzahlen: Wochenvolumen je Muskelgruppe, Trainings pro Woche und deine letzten Bestleistungen.');
+  }
+  h += '<div class="stat-grid">' +
+    statTile(gesamt, 'Trainings gesamt', '', true) +
+    /* Kein Delta gegen die Vorwoche: am Montag steht hier zwangsläufig ein Minus,
+       das nichts über die Form aussagt. Der Zwölf-Wochen-Schnitt ist der ehrliche Bezug. */
+    statTile(woche, 'diese Woche', schnittProWocheHtml(wocheVor), true) +
+    statTile(fmtVol(ton30), 'Volumen · 30 Tage', tonVor30 > 0 ? deltaHtml((ton30 - tonVor30) / 1000, 't ggü. Vormonat', true) : '') +
+    statTile(pr30, 'PRs · 30 Tage', deltaHtml(pr30 - prVor30, 'ggü. Vormonat', true)) +
+    '</div>';
   if (S.runs.length) {
     h += '<div class="stat-grid">' +
-      '<div class="stat-tile"><div class="stat-val">' + S.runs.length + '</div><div class="stat-lab">Läufe gesamt</div></div>' +
-      '<div class="stat-tile"><div class="stat-val">' + fmtKg(Math.round(km30 * 10) / 10) + ' km</div><div class="stat-lab">gelaufen (30 Tage)</div></div></div>';
+      statTile(S.runs.length, 'Läufe gesamt', '') +
+      statTile(fmtKg(Math.round(km30 * 10) / 10) + ' km', 'gelaufen · 30 Tage', kmVor30 > 0 ? deltaHtml(km30 - kmVor30, 'km ggü. Vormonat', true) : '') +
+      '</div>';
   }
   /* Wochenvolumen pro Muskelgruppe */
-  h += '<div class="section-title">Wochenvolumen (12 Wochen)</div>' +
+  h += '<div class="section-title">Wochenvolumen · 12 Wochen</div>' +
     '<div class="chip-row">' + ['Alle'].concat(MGS).map(m =>
       '<button class="chip' + (statMg === m ? ' active' : '') + '" data-action="stat-mg" data-mg="' + esc(m) + '">' + esc(m) + '</button>').join('') + '</div>';
   const weeks = weeklyStats(12);
   const wert = wk => statMode === 'saetze'
     ? (statMg === 'Alle' ? wk.saetzeGesamt : (wk.saetze[statMg] || 0))
     : (statMg === 'Alle' ? wk.tonnageGesamt : (wk.tonnage[statMg] || 0));
-  const bars = weeks.map(wk => ({
-    label: String(kwNummer(wk.start)), value: wert(wk),
-    tip: wk.label + ': ' + (statMode === 'saetze' ? wert(wk) + ' Sätze' : fmtVol(wert(wk)))
+  /* Die letzte Woche läuft noch — sie wird gedämpft gezeichnet, sonst liest sich
+     der halbfertige Balken wie ein Einbruch. */
+  const bars = weeks.map((wk, i) => ({
+    label: String(kwNummer(wk.start)), value: wert(wk), laufend: i === weeks.length - 1,
+    tip: wk.label + (i === weeks.length - 1 ? ' (läuft)' : '') + ': ' +
+      (statMode === 'saetze' ? wert(wk) + ' Sätze' : fmtVol(wert(wk)))
   }));
-  h += '<div class="card chart-card"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px">' +
-    '<h3 style="margin:0">' + esc(statMg) + '</h3>' +
+  const zone = (statMode === 'saetze' && statMg !== 'Alle' && Coach.VOLUMEN[statMg]) ? Coach.VOLUMEN[statMg] : null;
+  h += '<div class="card chart-card"><div class="chart-head">' +
+    '<div><h3>' + esc(statMg) + '</h3>' +
+    '<div class="chart-sub">' + (zone ? 'Ziel ' + zone.min + '–' + zone.max + ' Sätze/Woche' : 'letzter Balken: laufende Woche') + '</div></div>' +
     '<div class="seg"><button class="' + (statMode === 'saetze' ? 'active' : '') + '" data-action="stat-mode" data-mode="saetze">Sätze</button>' +
     '<button class="' + (statMode === 'tonnage' ? 'active' : '') + '" data-action="stat-mode" data-mode="tonnage">Tonnage</button></div></div>' +
-    Charts.barChart({ bars, yFmt: statMode === 'tonnage' ? fmtVol : undefined, leer: 'Noch keine Trainingsdaten' }) + '</div>';
+    Charts.barChart({ bars, zone, yFmt: statMode === 'tonnage' ? fmtVol : undefined, leer: 'Noch keine Trainingsdaten' }) + '</div>';
   /* Trainings pro Woche (Kraft + Läufe) */
   const runsProWoche = weeks.map(wk => S.runs.filter(r => r.startedAt >= wk.start && r.startedAt < wk.end).length);
   h += '<div class="section-title">Trainings pro Woche</div><div class="card chart-card">' +
     Charts.barChart({
       bars: weeks.map((wk, i) => ({
-        label: String(kwNummer(wk.start)), value: wk.workouts + runsProWoche[i],
+        label: String(kwNummer(wk.start)), value: wk.workouts + runsProWoche[i], laufend: i === weeks.length - 1,
         tip: wk.label + ': ' + wk.workouts + ' Kraft · ' + runsProWoche[i] + ' Läufe'
       })),
       leer: 'Noch keine Trainingsdaten'
     }) + '</div>';
-  /* PR-Liste */
-  h += '<div class="section-title">Letzte PRs</div>';
+  /* PR-Liste — die Zahl steht vorn, das Abzeichen wiederholt sie nicht */
+  h += '<div class="section-title">Letzte Bestleistungen</div>';
   const recent = prs.slice(-12).reverse();
-  if (!recent.length) h += '<div class="empty"><p>Noch keine PRs — leg los!</p></div>';
+  if (!recent.length) {
+    h += leerHtml('pokal', 'Noch keine Bestleistung',
+      'Sobald du in einer Übung mehr Gewicht, ein höheres geschätztes 1RM oder mehr Wiederholungen als je zuvor schaffst, steht sie hier.');
+  }
   recent.forEach(ev => {
-    h += '<div class="card" style="padding:10px 14px"><div style="display:flex;align-items:center;gap:8px">' +
-      '<div class="li-main"><div class="li-title" style="font-size:15px">' + esc(exById(ev.exId).name) + '</div>' +
-      '<div class="li-sub">' + fmtDatumKurz(ev.w.startedAt) + ' · ' + esc(ev.pr.text) + '</div></div>' +
-      '<span class="badge-pr">PR</span></div></div>';
+    const ex = exById(ev.exId);
+    h += '<div class="li-item">' + Icons.thumb(ex) +
+      '<div class="li-main"><div class="li-title li-title-sm">' + esc(ex.name) + '</div>' +
+      '<div class="meta-row"><span>' + fmtDatumKurz(ev.w.startedAt) + '</span><span>' + esc(ev.pr.text) + '</span></div></div>' +
+      '</div>';
   });
   return h;
 }
@@ -1689,22 +1914,26 @@ function renderDaten() {
     let bmiTxt = '';
     if (st.groesseCm > 0) {
       const bmi = letzte.kg / Math.pow(st.groesseCm / 100, 2);
-      bmiTxt = (delta != null ? ' · ' : '') + 'BMI ' + fmtKg(Math.round(bmi * 10) / 10);
+      bmiTxt = 'BMI ' + fmtKg(Math.round(bmi * 10) / 10);
     }
-    h += '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;gap:8px;flex-wrap:wrap">' +
-      '<div class="stat-val">' + fmtKg(letzte.kg) + ' kg</div>' +
-      '<div class="li-sub">' + (delta != null ? (delta > 0 ? '+' : '') + fmtKg(Math.round(delta * 10) / 10) + ' kg ggü. Vorwoche' : '') + bmiTxt + '</div></div>';
+    h += '<div class="bw-kopf"><div class="stat-val">' + fmtKg(letzte.kg) + ' kg</div>' +
+      '<div class="bw-meta">' +
+      (delta != null ? '<span>' + (delta > 0 ? '+' : '−') + fmtKg(Math.abs(Math.round(delta * 10) / 10)) + ' kg ggü. Vorwoche</span>' : '') +
+      (bmiTxt ? '<span>' + bmiTxt + '</span>' : '') + '</div></div>';
+    /* Der 7-Tage-Schnitt führt, die Tageswerte treten zurück: bei täglichem Wiegen
+       ist die Schwankung Rauschen, die Richtung ist die Information. */
     h += Charts.lineChart({
       points: S.bodyweight.map(b => {
         const x = new Date(b.date + 'T12:00').getTime();
-        return { x, xLabel: fmtDatumKurz(x), y: b.kg, tip: fmtDatumKurz(x) + ': ' + fmtKg(b.kg) + ' kg' };
-      }), trend: true
+        return { x, xLabel: fmtDatumKurz(x), y: b.kg, tip: fmtDatumLang(x) + ' · ' + fmtKg(b.kg) + ' kg' };
+      }), trend: true, einheit: 'kg', maxIstBest: false
     });
-    h += '<div class="mini-note">Gestrichelte Linie: 7-Tage-Durchschnitt</div>';
+    h += '<div class="mini-note">Kräftige Linie: 7-Tage-Durchschnitt. Dünn dahinter: die einzelnen Messungen.</div>';
   } else {
-    h += '<div class="chart-leer">Noch kein Körpergewicht erfasst</div>';
+    h += leerHtml('waage', 'Noch kein Gewicht erfasst',
+      'Trag dein Gewicht ein paar Mal pro Woche ein — nach etwa zwei Wochen zeigt der 7-Tage-Schnitt die tatsächliche Richtung.');
   }
-  h += '<button class="btn btn-block btn-soft" style="margin-top:10px" data-action="bw-add">+ Gewicht eintragen</button></div>';
+  h += '<button class="btn btn-block btn-soft bw-btn" data-action="bw-add">+ Gewicht eintragen</button></div>';
   h += settingRow('Größe', 'in cm — für den BMI', miniInput('groesseCm', st.groesseCm || ''));
   h += '<div class="section-title">Darstellung & Signale</div>' +
     settingRow('Design', 'Automatisch folgt dem System',
@@ -1735,7 +1964,7 @@ function renderDaten() {
   const stv = st.strava;
   if (stravaVerbunden()) {
     h += settingRow('Verbunden' + (stv.athlet ? ' als ' + stv.athlet : ''), 'Beendete Workouts und Läufe werden gepostet',
-      '<span class="tag" style="background:var(--green-soft);color:var(--green);margin:0">Aktiv</span>') +
+      '<span class="tag tag-gruen tag-aktiv">Aktiv</span>') +
       settingRow('Automatisch posten', 'nach jedem beendeten Training', switchHtml('stravaAuto', stv.autoPost !== false)) +
       '<button class="btn btn-block" data-action="strava-trennen">Strava trennen</button>';
   } else {
@@ -1746,32 +1975,32 @@ function renderDaten() {
       '<button class="btn" data-action="strava-hilfe">Anleitung</button></div>';
   }
   /* Zugangsschlüssel für den Worker (gilt für Strava UND Pausen-Push) */
-  h += '<div class="form-row" style="margin-top:10px"><label>Zugangsschlüssel</label>' +
+  h += '<div class="form-row mt-m"><label>Zugangsschlüssel</label>' +
     '<input class="input" type="password" placeholder="wird beim Worker-Deploy festgelegt" value="' + esc(st.workerKey || '') + '" data-appset="workerKey" autocapitalize="off" autocorrect="off" autocomplete="off"></div>' +
     '<div class="mini-note">Schützt deinen Worker vor fremden Zugriffen (Strava und Pausen-Push) — muss auf allen Geräten gleich sein.</div>';
-  /* Pausen-Push */
+  /* Pausen-Push — mit Diagnose statt einem stummen Schalter */
   h += '<div class="section-title">Pausen-Push</div>';
+  h += '<div class="info-box">Der Push-Weckruf ist der <b>einzige</b> Weg, der bei gesperrtem Handy klingelt, ohne deine Musik zu stoppen. Er läuft über deinen Cloudflare-Worker — die App selbst schläft im Sperrbildschirm und kann dort nichts auslösen.</div>';
+  h += pushDiagnoseHtml();
   if (S.settings.push.aktiv) {
-    h += settingRow('Pausen-Push aktiv', 'Am Pausenende klingelt eine Push-Nachricht — auch bei gesperrtem Handy, ohne deine Musik zu stoppen. Braucht kurz Internet beim Abhaken.',
-      '<span class="tag" style="background:var(--green-soft);color:var(--green);margin:0">Aktiv</span>') +
-      settingRow('Übungsname in der Meldung', 'Zeigt z. B. „Pause vorbei — Bankdrücken, Satz 3". Der Übungsname verlässt dafür kurz dein Gerät (verschlüsselt zum Push-Dienst). Aus: nur „Pause vorbei".',
-        switchHtml('pushInhalt', st.pushInhalt === true)) +
-      '<button class="btn btn-block" data-action="push-aus">Pausen-Push deaktivieren</button>';
+    h += settingRow('Übungsname in der Meldung', 'Zeigt z. B. „Pause vorbei — Bankdrücken, Satz 3". Der Übungsname verlässt dafür kurz dein Gerät (verschlüsselt zum Push-Dienst). Aus: nur „Pause vorbei".',
+      switchHtml('pushInhalt', st.pushInhalt === true));
+    h += '<div class="row-2" style="margin-top:2px"><button class="btn btn-primary" data-action="push-test">Test in 5 s</button>' +
+      '<button class="btn" data-action="push-aus">Deaktivieren</button></div>';
   } else {
-    h += '<div class="info-box">Push-Weckruf am Pausenende: klingelt auch bei gesperrtem Handy oder in anderer App — und deine Musik läuft ungestört weiter. Nutzt denselben Cloudflare-Worker wie Strava (Worker-URL oben eintragen). Nur in der installierten App (Home-Bildschirm) möglich.</div>' +
-      '<button class="btn btn-block btn-primary" data-action="push-aktivieren">Pausen-Push aktivieren</button>';
+    h += '<button class="btn btn-block btn-primary" data-action="push-aktivieren">Pausen-Push aktivieren</button>';
   }
   h += '<div class="section-title">Datenverwaltung</div>' +
     '<div class="info-box">Deine Daten liegen im Browser-Speicher <b>dieses Geräts</b> und hängen am Speicherort der App — die Kraftlog.app also nicht verschieben oder umbenennen. Zum Übertragen auf ein anderes Gerät (z. B. iPhone) und als Backup: Export → Import.' +
     (st.lastExport ? '<br>Letzter Export: ' + fmtDatumLang(st.lastExport) : '<br>Noch kein Export gemacht.') + '</div>' +
     '<button class="btn btn-block btn-primary" data-action="export-json">Export als JSON-Datei</button>' +
-    '<button class="btn btn-block" style="margin-top:10px" data-action="export-clip">Export in Zwischenablage</button>' +
-    '<button class="btn btn-block" style="margin-top:10px" data-action="import-open">Import…</button>' +
-    '<button class="btn btn-block" style="margin-top:10px" data-action="strong-open">Import aus Strong (CSV)…</button>';
+    '<button class="btn btn-block mt-m" data-action="export-clip">Export in Zwischenablage</button>' +
+    '<button class="btn btn-block mt-m" data-action="import-open">Import…</button>' +
+    '<button class="btn btn-block mt-m" data-action="strong-open">Import aus Strong (CSV)…</button>';
   let backup = null;
   try { backup = localStorage.getItem(BACKUP_KEY); } catch (e) { }
-  if (backup) h += '<button class="btn btn-block" style="margin-top:10px" data-action="backup-restore">Backup wiederherstellen</button>';
-  h += '<button class="btn btn-block btn-danger" style="margin-top:22px" data-action="wipe">Alle Daten löschen…</button>';
+  if (backup) h += '<button class="btn btn-block mt-m" data-action="backup-restore">Backup wiederherstellen</button>';
+  h += '<button class="btn btn-block btn-danger mt-xl" data-action="wipe">Alle Daten löschen…</button>';
   /* App-Version & manuelles Update */
   h += '<div class="section-title">App</div>' +
     '<div class="info-box">Kraftlog aktualisiert sich beim Öffnen automatisch. Wenn eine neue Funktion noch fehlt, kannst du hier von Hand nach einem Update suchen — danach lädt die App kurz neu.</div>' +
@@ -1779,9 +2008,72 @@ function renderDaten() {
     '<div class="mini-note" style="text-align:center;margin-top:10px">Version ' + esc(APP_VERSION) + ' · ' + allExercises().length + ' Übungen · Daten-Schema v' + SCHEMA_VERSION + '</div>';
   return h;
 }
+/* ---------- Push-Diagnose ----------
+   Der Weckruf im Sperrbildschirm hängt an einer Kette aus sieben Gliedern. Reißt
+   eines, passiert einfach nichts — ohne Fehlermeldung. Diese Liste zeigt, welches.
+   Die letzten beiden Glieder liegen in den iOS-Einstellungen und sind vom Web aus
+   grundsätzlich nicht prüfbar; sie stehen als Hinweis da, nicht als Prüfung. */
+function alsAppInstalliert() {
+  try {
+    return window.navigator.standalone === true ||
+      (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);
+  } catch (e) { return false; }
+}
+function pushDiagnose() {
+  const st = S.settings;
+  const notif = ('Notification' in window) ? Notification.permission : 'unsupported';
+  const rows = [];
+  rows.push({
+    ok: !!st.strava.workerUrl, titel: 'Worker-URL eingetragen',
+    text: st.strava.workerUrl ? esc(st.strava.workerUrl) : 'Fehlt — trag sie oben unter Strava ein. Ohne sie wird nie ein Weckruf geplant.'
+  });
+  rows.push({
+    ok: !!st.workerKey, titel: 'Zugangsschlüssel eingetragen',
+    text: st.workerKey ? 'Gesetzt (auf allen Geräten derselbe)' : 'Fehlt — der Worker weist Anfragen ohne Schlüssel ab.'
+  });
+  rows.push({
+    ok: alsAppInstalliert(), titel: 'Als App vom Home-Bildschirm',
+    text: alsAppInstalliert() ? 'Ja' : 'Nein — iOS erlaubt Web-Push nur in der installierten PWA. In Safari: Teilen ▸ Zum Home-Bildschirm.'
+  });
+  rows.push({
+    ok: notif === 'granted', titel: 'Benachrichtigungen erlaubt',
+    text: notif === 'granted' ? 'Ja'
+      : notif === 'denied' ? 'Abgelehnt — nur in iOS-Einstellungen ▸ Kraftlog wieder einschaltbar.'
+      : notif === 'unsupported' ? 'Dieser Browser kennt keine Benachrichtigungen.'
+      : 'Noch nicht gefragt — wird beim ersten abgehakten Satz abgefragt.'
+  });
+  rows.push({
+    ok: !!(st.push && st.push.aktiv && st.push.sub), titel: 'Push-Abo beim Dienst registriert',
+    text: (st.push && st.push.aktiv && st.push.sub) ? 'Ja' : 'Noch nicht — unten „Pausen-Push aktivieren".'
+  });
+  rows.push({
+    ok: null, titel: 'iOS: Töne für Kraftlog an',
+    text: 'Nicht prüfbar. Einstellungen ▸ Mitteilungen ▸ Kraftlog: „Töne" muss an sein und die Meldung darf nicht in der „Geplanten Zusammenfassung" landen.'
+  });
+  rows.push({
+    ok: null, titel: 'Kein Fokus / Nicht stören',
+    text: 'Nicht prüfbar. Ein aktiver Fokus unterdrückt den Ton, auch wenn der Push ankommt.'
+  });
+  return rows;
+}
+function pushDiagnoseHtml() {
+  const rows = pushDiagnose();
+  const offen = rows.filter(r => r.ok === false).length;
+  return '<div class="card"><div class="diag-kopf">' +
+    (offen ? '<span class="tag tag-orange">' + offen + ' ' + (offen === 1 ? 'Glied fehlt' : 'Glieder fehlen') + '</span>'
+           : '<span class="tag tag-gruen">Kette vollständig</span>') +
+    '<span class="diag-kopf-text">' + (offen ? 'Bis dahin bleibt es im Sperrbildschirm still.' : 'Prüf den Rest mit einem Test-Push.') + '</span></div>' +
+    rows.map(r =>
+      '<div class="diag-row"><span class="diag-icon ' + (r.ok === true ? 'ok' : r.ok === false ? 'fehlt' : 'unklar') + '" aria-hidden="true">' +
+      (r.ok === true ? '✓' : r.ok === false ? '!' : '?') + '</span>' +
+      '<span class="diag-main"><span class="diag-titel">' + esc(r.titel) + '</span>' +
+      '<span class="diag-text">' + r.text + '</span></span></div>').join('') +
+    '</div>';
+}
+
 function settingRow(title, sub, control) {
-  return '<div class="setting-row"><div class="li-main"><div class="li-title" style="font-size:15px">' + esc(title) + '</div>' +
-    '<div class="li-sub" style="white-space:normal">' + esc(sub) + '</div></div>' + control + '</div>';
+  return '<div class="setting-row"><div class="li-main"><div class="li-title li-title-sm">' + esc(title) + '</div>' +
+    '<div class="li-sub li-sub-wrap">' + esc(sub) + '</div></div>' + control + '</div>';
 }
 function switchHtml(key, on) {
   return '<label class="switch"><input type="checkbox" data-set="' + key + '"' + (on ? ' checked' : '') + '><span class="knob"></span></label>';
@@ -2457,23 +2749,23 @@ function applyTheme() {
 
 /* ---------- Aktionen (Klick-Dispatch über data-action) ---------- */
 const ACTIONS = {
-  'tab': el => { tab = el.dataset.tab; trainSub = null; uebSub = null; verlaufSub = null; editDraft = null; tplDraft = null; planAuswahl = null; closeSheet(); render(); window.scrollTo(0, 0); },
+  'tab': el => { markViewAnim(); tab = el.dataset.tab; trainSub = null; uebSub = null; verlaufSub = null; editDraft = null; tplDraft = null; planAuswahl = null; closeSheet(); render(); window.scrollTo(0, 0); },
   'sheet-close': () => closeSheet(),
 
   /* Training / Pläne */
-  'train-home': () => { trainSub = null; tplDraft = null; planAuswahl = null; render(); },
-  'plaene': () => { trainSub = 'plaene'; tplDraft = null; planAuswahl = null; render(); },
+  'train-home': () => { markViewAnim(); trainSub = null; tplDraft = null; planAuswahl = null; render(); },
+  'plaene': () => { markViewAnim(); trainSub = 'plaene'; tplDraft = null; planAuswahl = null; render(); },
 
   /* Wochenplan */
-  'wochenplan': () => { trainSub = 'wochenplan'; render(); window.scrollTo(0, 0); },
+  'wochenplan': () => { markViewAnim(); trainSub = 'wochenplan'; render(); window.scrollTo(0, 0); },
   'wp-tag': el => {
     const tag = el.dataset.tag;
     if (!S.templates.length) { showToast('Lege zuerst einen Plan an'); return; }
     let liste = '<button class="li-item" style="min-height:50px" data-action="wp-zuweisen" data-tag="' + tag + '">' +
-      '<div class="li-main"><div class="li-title" style="font-size:15px">Ruhetag</div><div class="li-sub">kein Training</div></div></button>';
+      '<div class="li-main"><div class="li-title li-title-sm">Ruhetag</div><div class="li-sub">kein Training</div></div></button>';
     S.templates.forEach(t => {
       liste += '<button class="li-item" style="min-height:50px" data-action="wp-zuweisen" data-tag="' + tag + '" data-tpl="' + esc(t.id) + '">' +
-        '<div class="li-main"><div class="li-title" style="font-size:15px">' + esc(t.name) + '</div>' +
+        '<div class="li-main"><div class="li-title li-title-sm">' + esc(t.name) + '</div>' +
         '<div class="li-sub">' + t.exercises.length + ' Übungen · ' + saetzeVon(t) + ' Arbeitssätze</div></div></button>';
     });
     openSheet('<div class="sheet-title">' + WP_LABEL[tag] + '</div><div class="sheet-sub">Plan für diesen Tag wählen:</div>' + liste);
@@ -2497,7 +2789,7 @@ const ACTIONS = {
       if (!teile.length) continue;
       inhalt += '<div class="hist-ex-name">' + WP_LABEL[tag] + ' · ' + esc(tpl.name) + '</div>';
       teile.forEach(x => {
-        inhalt += '<div class="hist-set"><span class="hs-main" style="flex:1;font-size:14px">' + esc(x.ex.name) + '</span>' +
+        inhalt += '<div class="hist-set"><span class="hs-main hs-main-flex">' + esc(x.ex.name) + '</span>' +
           '<span class="hs-sub">' + x.n + ' ' + (x.n === 1 ? 'Satz' : 'Sätze') + '</span></div>';
         gesamt += x.n;
       });
@@ -2886,6 +3178,81 @@ const ACTIONS = {
     closeSheet();
     render();
   },
+
+  /* --- Optionen einer Übung im laufenden Training --- */
+  'wo-ex-menu': el => {
+    const aw = S.activeWorkout;
+    if (!aw) return;
+    const xi = +el.dataset.ex;
+    const wex = aw.exercises[xi];
+    if (!wex) return;
+    const ex = exById(wex.exId);
+    const fertig = wex.sets.filter(s => s.done === true).length;
+    openSheet('<div class="sheet-title">' + esc(ex.name) + '</div>' +
+      '<div class="sheet-sub">' + wex.sets.length + ' ' + (wex.sets.length === 1 ? 'Satz' : 'Sätze') + ' · ' + fertig + ' abgehakt</div>' +
+      '<div class="sheet-actions">' +
+      '<button class="btn btn-primary" data-action="wo-ex-replace" data-ex="' + xi + '">Übung ersetzen…</button>' +
+      '<button class="btn" data-action="wo-ex-notiz" data-ex="' + xi + '">Notiz</button>' +
+      '<button class="btn" data-action="wo-warmup" data-ex="' + xi + '">Aufwärmen berechnen</button>' +
+      '<button class="btn btn-danger" data-action="wo-ex-remove" data-ex="' + xi + '">Übung entfernen</button>' +
+      '</div>');
+  },
+  /* Übung mitten im Training tauschen (Gerät besetzt, Schulter zwickt, …).
+     Bereits abgehakte Sätze bleiben bei der alten Übung — so wurden sie ausgeführt.
+     Die neue Übung übernimmt nur die noch offenen Sätze und belegt ihre Gewichte
+     aus der eigenen Historie vor: 80 kg Bankdrücken sind keine 80 kg Kurzhantel. */
+  'wo-ex-replace': el => {
+    const aw = S.activeWorkout;
+    if (!aw) return;
+    const xi = +el.dataset.ex;
+    const alt = aw.exercises[xi];
+    if (!alt) return;
+    const altId = alt.exId;
+    openExercisePicker(neuId => {
+      if (neuId === altId) { showToast('Das ist dieselbe Übung'); return; }
+      const offen = alt.sets.filter(s => s.done !== true);
+      const fertig = alt.sets.filter(s => s.done === true);
+      const ziele = offen.length
+        ? offen.map(s => s.warmup ? { warmup: true, reps: s.reps, kg: null } : { reps: s.reps })
+        : [{ reps: null }, { reps: null }, { reps: null }];
+      const neu = buildWoExercise(neuId, ziele, alt.restSec);
+      neu.ersetztFuer = alt.ersetztFuer || altId;
+      neu.notiz = alt.notiz || null;
+      if (fertig.length) {
+        alt.sets = fertig;
+        aw.exercises.splice(xi + 1, 0, neu);
+        /* Die laufende Pause zeigt auf einen Satz per Index — beim Einschieben mitziehen */
+        if (aw.rest && aw.rest.exIdx > xi) aw.rest.exIdx++;
+        showToast('Ab hier: ' + exById(neuId).name);
+      } else {
+        aw.exercises[xi] = neu;
+        if (aw.rest && aw.rest.exIdx === xi) { aw.rest = null; pauseWachEnde(); }
+        showToast('Ersetzt durch ' + exById(neuId).name);
+      }
+      save();
+      render();
+    });
+  },
+  'wo-ex-remove': el => {
+    const aw = S.activeWorkout;
+    if (!aw) return;
+    const xi = +el.dataset.ex;
+    const wex = aw.exercises[xi];
+    if (!wex) return;
+    if (wex.sets.some(s => s.done === true)) {
+      showToast('Abgehakte Sätze — erst die Haken lösen');
+      return;
+    }
+    aw.exercises.splice(xi, 1);
+    if (aw.rest) {
+      if (aw.rest.exIdx === xi) { aw.rest = null; pauseWachEnde(); }
+      else if (aw.rest.exIdx > xi) aw.rest.exIdx--;
+    }
+    save();
+    closeSheet();
+    render();
+    showToast('Übung entfernt');
+  },
   'wo-warmup': el => {
     const aw = S.activeWorkout;
     if (!aw) return;
@@ -2939,6 +3306,27 @@ const ACTIONS = {
     save();
     renderTimerBar();
   },
+  /* Freie Pause aus der Schnellwahl — unabhängig vom Satz-Abhaken */
+  'rest-manuell': el => startRest(+el.dataset.sec, true),
+  'rest-frei': () => {
+    const letzte = S.settings.letztePauseFrei || 150;
+    openSheet('<div class="sheet-title">Pause starten</div>' +
+      '<div class="sheet-sub">Läuft unabhängig von den Sätzen — für Dehnen, Trinken oder eine Extrapause.</div>' +
+      '<div class="rest-quick">' +
+      [45, 60, 90, 120, 150, 180, 240, 300].map(s =>
+        '<button class="btn" data-action="rest-manuell" data-sec="' + s + '">' + fmtMinSek(s) + '</button>').join('') +
+      '</div>' +
+      '<div class="form-row mt-l"><label>Eigene Dauer (Sekunden)</label>' +
+      '<input class="input" id="rest-frei-sec" inputmode="numeric" placeholder="z. B. 210" value="' + letzte + '"></div>' +
+      '<div class="sheet-actions"><button class="btn btn-primary" data-action="rest-frei-start">Pause starten</button></div>');
+  },
+  'rest-frei-start': () => {
+    const v = parseNum($('#rest-frei-sec').value);
+    if (!(v > 0)) { showToast('Bitte eine Dauer in Sekunden eingeben'); return; }
+    S.settings.letztePauseFrei = Math.max(10, Math.min(3600, Math.round(v)));
+    closeSheet();
+    startRest(S.settings.letztePauseFrei, true);
+  },
   'pick-ex': el => {
     const cb = pickerCb;
     closeSheet();
@@ -2946,8 +3334,8 @@ const ACTIONS = {
   },
 
   /* Verlauf */
-  'verlauf-home': () => { verlaufSub = null; editDraft = null; render(); },
-  'wo-open': el => { verlaufSub = { id: el.dataset.id }; render(); window.scrollTo(0, 0); },
+  'verlauf-home': () => { markViewAnim(); verlaufSub = null; editDraft = null; render(); },
+  'wo-open': el => { markViewAnim(); verlaufSub = { id: el.dataset.id }; render(); window.scrollTo(0, 0); },
   'wo-edit': () => {
     const w = S.workouts.find(x => x.id === verlaufSub.id);
     if (!w) return;
@@ -2995,15 +3383,16 @@ const ACTIONS = {
   }),
 
   /* Übungen */
-  'ueb-open': el => { uebSub = { exId: el.dataset.id }; render(); window.scrollTo(0, 0); },
-  'ueb-back': () => { uebSub = null; render(); },
+  'ueb-open': el => { markViewAnim(); uebSub = { exId: el.dataset.id }; render(); window.scrollTo(0, 0); },
+  'ueb-back': () => { markViewAnim(); uebSub = null; render(); },
   'filter-mg': el => { uebFilter.mg = el.dataset.mg === 'Alle' ? null : el.dataset.mg; render(); },
   'filter-eq': el => { uebFilter.eq = el.dataset.eq === 'Alle Geräte' ? null : el.dataset.eq; render(); },
+  'filter-reset': () => { uebFilter = { q: '', mg: null, eq: null }; render(); },
   'cu-new': () => openSheet('<div class="sheet-title">Eigene Übung</div>' +
     '<div class="form-row"><label>Name</label><input class="input" id="cu-name" placeholder="z. B. Kabelzug einarmig"></div>' +
     '<div class="form-row"><label>Muskelgruppe</label><select class="input" id="cu-mg">' + MGS.map(m => '<option>' + esc(m) + '</option>').join('') + '</select></div>' +
     '<div class="form-row"><label>Equipment</label><select class="input" id="cu-eq">' + EQS.map(m => '<option>' + esc(m) + '</option>').join('') + '</select></div>' +
-    '<div class="setting-row" style="box-shadow:none"><div class="li-main"><div class="li-title" style="font-size:15px">Grundübung</div>' +
+    '<div class="setting-row" style="box-shadow:none"><div class="li-main"><div class="li-title li-title-sm">Grundübung</div>' +
     '<div class="li-sub">längere Standardpause</div></div>' +
     '<label class="switch"><input type="checkbox" id="cu-compound"><span class="knob"></span></label></div>' +
     '<div class="sheet-actions"><button class="btn btn-primary" data-action="cu-save">Anlegen</button></div>'),
@@ -3026,7 +3415,7 @@ const ACTIONS = {
       '<div class="form-row"><label>Name</label><input class="input" id="cu-name" value="' + esc(ex.name) + '"></div>' +
       '<div class="form-row"><label>Muskelgruppe</label><select class="input" id="cu-mg">' + MGS.map(m => '<option' + (m === ex.mg ? ' selected' : '') + '>' + esc(m) + '</option>').join('') + '</select></div>' +
       '<div class="form-row"><label>Equipment</label><select class="input" id="cu-eq">' + EQS.map(m => '<option' + (m === ex.eq ? ' selected' : '') + '>' + esc(m) + '</option>').join('') + '</select></div>' +
-      '<div class="setting-row" style="box-shadow:none"><div class="li-main"><div class="li-title" style="font-size:15px">Grundübung</div>' +
+      '<div class="setting-row" style="box-shadow:none"><div class="li-main"><div class="li-title li-title-sm">Grundübung</div>' +
       '<div class="li-sub">längere Standardpause, größerer Steigerungsschritt</div></div>' +
       '<label class="switch"><input type="checkbox" id="cu-compound"' + (ex.compound ? ' checked' : '') + '><span class="knob"></span></label></div>' +
       '<div class="sheet-actions"><button class="btn btn-primary" data-action="cu-edit-save" data-id="' + esc(ex.id) + '">Speichern</button></div>');
@@ -3096,7 +3485,7 @@ const ACTIONS = {
   'bw-add': () => {
     let liste = '';
     [...S.bodyweight].reverse().slice(0, 6).forEach(b => {
-      liste += '<div class="setting-row" style="min-height:44px;padding:8px 12px"><div class="li-main"><div class="li-title" style="font-size:15px">' + fmtKg(b.kg) + ' kg</div>' +
+      liste += '<div class="setting-row" style="min-height:44px;padding:8px 12px"><div class="li-main"><div class="li-title li-title-sm">' + fmtKg(b.kg) + ' kg</div>' +
         '<div class="li-sub">' + b.date.split('-').reverse().join('.') + '</div></div>' +
         '<button class="del-btn" data-action="bw-del" data-date="' + b.date + '">×</button></div>';
     });
@@ -3104,7 +3493,7 @@ const ACTIONS = {
       '<div class="form-row"><label>Datum</label><input type="date" class="input" id="bw-date" value="' + todayStr() + '"></div>' +
       '<div class="form-row"><label>Gewicht (kg)</label><input class="input" id="bw-kg" inputmode="decimal" placeholder="z. B. 81,4"></div>' +
       '<div class="sheet-actions"><button class="btn btn-primary" data-action="bw-save">Speichern</button></div>' +
-      (liste ? '<div class="section-title" style="margin-top:18px">Letzte Einträge</div>' + liste : ''));
+      (liste ? '<div class="section-title mt-xl">Letzte Einträge</div>' + liste : ''));
   },
   'bw-save': () => {
     const date = $('#bw-date').value;
@@ -3131,7 +3520,7 @@ const ACTIONS = {
   'import-open': () => openSheet('<div class="sheet-title">Import</div>' +
     '<div class="sheet-sub">JSON-Datei wählen oder Text einfügen. Die aktuellen Daten werden vorher automatisch als Backup gesichert.</div>' +
     '<input type="file" id="imp-file" accept=".json,application/json" class="input" style="padding:11px">' +
-    '<div class="form-row" style="margin-top:10px"><label>… oder JSON-Text einfügen</label><textarea class="input" id="imp-text"></textarea></div>' +
+    '<div class="form-row mt-m"><label>… oder JSON-Text einfügen</label><textarea class="input" id="imp-text"></textarea></div>' +
     '<div class="sheet-actions"><button class="btn btn-primary" data-action="imp-go">Importieren</button></div>'),
   'imp-go': () => {
     const f = $('#imp-file').files[0];
@@ -3150,13 +3539,13 @@ const ACTIONS = {
     '<b>Verlauf importieren</b> übernimmt alle vergangenen Workouts (inkl. Pausenzeiten) in deinen Verlauf und deine Statistiken.<br>' +
     '<b>Nur Pläne erstellen</b> legt aus der jeweils letzten Einheit jedes Workout-Namens (z. B. „Chest", „Legs") eine Vorlage an — ohne den Verlauf zu füllen. Beides ist wiederholbar, Vorhandenes wird übersprungen.</div>' +
     '<input type="file" id="strong-file" accept=".csv,text/csv" class="input" style="padding:11px">' +
-    '<div class="setting-row" style="margin-top:10px"><div class="li-main"><div class="li-title" style="font-size:15px">Original-Übungsnamen behalten</div>' +
+    '<div class="setting-row mt-m"><div class="li-main"><div class="li-title li-title-sm">Original-Übungsnamen behalten</div>' +
     '<div class="li-sub">Übungen heißen wie in Strong und werden bei Bedarf neu angelegt. Aus: bekannte Übungen werden den deutschen Kraftlog-Übungen zugeordnet.</div></div>' +
     '<label class="switch"><input type="checkbox" id="strong-namen" checked><span class="knob"></span></label></div>' +
-    '<div class="setting-row" style="margin-top:10px"><div class="li-main"><div class="li-title" style="font-size:15px">Gewichtseinheit in Strong</div>' +
+    '<div class="setting-row mt-m"><div class="li-main"><div class="li-title li-title-sm">Gewichtseinheit in Strong</div>' +
     '<div class="li-sub">nur nötig, falls die Datei keine Einheiten-Spalte hat</div></div>' +
     '<select class="input-mini" id="strong-unit" style="width:70px"><option value="kg">kg</option><option value="lbs">lbs</option></select></div>' +
-    '<div class="form-row" style="margin-top:10px"><label>… oder CSV-Text einfügen</label><textarea class="input" id="strong-text"></textarea></div>' +
+    '<div class="form-row mt-m"><label>… oder CSV-Text einfügen</label><textarea class="input" id="strong-text"></textarea></div>' +
     '<div class="sheet-actions"><button class="btn btn-primary" data-action="strong-go">Verlauf importieren</button>' +
     '<button class="btn btn-soft" data-action="strong-plaene">Nur Pläne erstellen</button></div>'),
   'strong-go': () => strongStart('verlauf'),
@@ -3219,7 +3608,7 @@ const ACTIONS = {
   'tpl-import-open': () => openSheet('<div class="sheet-title">Pläne importieren</div>' +
     '<div class="sheet-sub">Wähle eine Kraftlog-Plan-Datei (aus „Exportieren" — deiner oder von Freunden). Enthaltene eigene Übungen werden automatisch mit angelegt. Pläne, deren Name schon existiert, werden übersprungen.</div>' +
     '<input type="file" id="tplimp-file" accept=".json,application/json" class="input" style="padding:11px">' +
-    '<div class="form-row" style="margin-top:10px"><label>… oder Text einfügen</label><textarea class="input" id="tplimp-text"></textarea></div>' +
+    '<div class="form-row mt-m"><label>… oder Text einfügen</label><textarea class="input" id="tplimp-text"></textarea></div>' +
     '<div class="sheet-actions"><button class="btn btn-primary" data-action="tpl-import-go">Importieren</button></div>'),
   'tpl-import-go': () => {
     const f = $('#tplimp-file').files[0];
@@ -3302,6 +3691,26 @@ const ACTIONS = {
       showToast('Aktivierung fehlgeschlagen: ' + e.message);
     }
   },
+  /* Test-Weckruf: dieselbe Strecke wie im Training, nur ohne Training.
+     Bildschirm sperren, fünf Sekunden warten — dann weiß man, woran man ist. */
+  'push-test': async () => {
+    if (!pushAktiv()) { showToast('Push ist nicht vollständig eingerichtet'); return; }
+    if (!navigator.onLine) { showToast('Keine Internetverbindung'); return; }
+    showToast('Test läuft — Handy jetzt sperren');
+    try {
+      const r = await workerFetch('/push/planen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subscription: S.settings.push.sub, delaySec: 5,
+          titel: 'Test-Weckruf', text: 'Wenn das mit Ton kommt, funktioniert die Kette.'
+        })
+      });
+      if (!r || !r.ok) showToast('Worker antwortet nicht (' + (r ? r.status : 'kein Netz') + ')');
+    } catch (e) {
+      showToast('Worker nicht erreichbar — URL und Schlüssel prüfen');
+    }
+  },
   'push-aus': async () => {
     try {
       const reg = await navigator.serviceWorker.ready;
@@ -3359,8 +3768,8 @@ const ACTIONS = {
 
 /* ---------- Event-Delegation ---------- */
 document.addEventListener('click', e => {
-  const dot = e.target.closest('.chart-dot');
-  if (dot) { showChartTip(dot); return; }
+  const dot = e.target.closest('.chart-dot-hit');
+  if (dot) { showChartTip(dot, e); return; }
   hideChartTip();
   const el = e.target.closest('[data-action]');
   if (!el) return;

@@ -14,13 +14,15 @@
   <title>Kraftlog — Krafttraining-Tracker</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
-  <link rel="stylesheet" href="style.css?v=27">
+  <link rel="stylesheet" href="style.css?v=28">
 </head>
 <body>
   <div id="app">
     <main id="view"></main>
 
-    <!-- Pausen-Timer (sticky über der Tab-Bar) -->
+    <!-- Pausen-Leiste (sticky über der Tab-Bar).
+         Zwei Zustände am selben Ort: läuft eine Pause, steht hier der Countdown;
+         läuft keine, steht hier die Schnellwahl für eine freie Pause. -->
     <div id="timer-bar" class="hidden">
       <div id="timer-progress-track"><div id="timer-progress"></div></div>
       <div class="timer-row">
@@ -28,6 +30,13 @@
         <button class="btn btn-small" data-action="rest-plus">+30 s</button>
         <button class="btn btn-small" data-action="rest-skip">Skip</button>
         <button class="btn btn-small btn-primary" data-action="rest-done">Los!</button>
+      </div>
+      <div class="timer-idle">
+        <span class="timer-idle-lab">Pause</span>
+        <button class="btn btn-small" data-action="rest-manuell" data-sec="60">1 min</button>
+        <button class="btn btn-small" data-action="rest-manuell" data-sec="120">2 min</button>
+        <button class="btn btn-small" data-action="rest-manuell" data-sec="180">3 min</button>
+        <button class="btn btn-small btn-soft" data-action="rest-frei" aria-label="Andere Pausendauer">⋯</button>
       </div>
     </div>
 
@@ -62,11 +71,11 @@
   <button id="wo-ruecksprung" class="hidden" data-action="wo-zurueck"></button>
   <div id="quer-hinweis">Kraftlog ist fürs Hochformat gemacht —<br>bitte dreh dein Handy zurück.</div>
 
-  <script src="exercises.js?v=27"></script>
-  <script src="icons.js?v=27"></script>
-  <script src="coach.js?v=27"></script>
-  <script src="charts.js?v=27"></script>
-  <script src="timer.js?v=27"></script>
-  <script src="app.js?v=27"></script>
+  <script src="exercises.js?v=28"></script>
+  <script src="icons.js?v=28"></script>
+  <script src="coach.js?v=28"></script>
+  <script src="charts.js?v=28"></script>
+  <script src="timer.js?v=28"></script>
+  <script src="app.js?v=28"></script>
 </body>
 </html>

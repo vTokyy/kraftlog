@@ -1,0 +1,232 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-27T00:00:00.000Z",
+  "title": "Design System: Kraftlog",
+  "extensions": {
+    "colorMeta": {
+      "blue": {
+        "role": "primary",
+        "displayName": "Kraftlog-Blau",
+        "canonical": "#0071e3",
+        "darkValue": "#0a84ff",
+        "tonalRamp": ["#001f3f", "#00305f", "#004180", "#0055a8", "#0071e3", "#3d95ea", "#7bb8f1", "#c2ddf8"]
+      },
+      "green": {
+        "role": "secondary",
+        "displayName": "Erledigt-Grün",
+        "canonical": "#34c759",
+        "darkValue": "#30d158",
+        "tonalRamp": ["#0d3418", "#145026", "#1c6d34", "#268f45", "#34c759", "#66d783", "#98e6ac", "#cbf3d6"]
+      },
+      "orange": {
+        "role": "secondary",
+        "displayName": "Warn-Orange",
+        "canonical": "#ff9500",
+        "darkValue": "#ff9f0a",
+        "tonalRamp": ["#3d2400", "#5c3600", "#7a4800", "#b36a00", "#ff9500", "#ffb03d", "#ffca7b", "#ffe5be"]
+      },
+      "red": {
+        "role": "tertiary",
+        "displayName": "Zerstörend-Rot",
+        "canonical": "#ff3b30",
+        "darkValue": "#ff453a",
+        "tonalRamp": ["#3d0c09", "#5c1210", "#7a1916", "#b32520", "#ff3b30", "#ff6f66", "#ffa39d", "#ffd6d3"]
+      },
+      "gold": {
+        "role": "tertiary",
+        "displayName": "Rekord-Gold",
+        "canonical": "#ffcc00",
+        "darkValue": "#ffcc00",
+        "tonalRamp": ["#3d3100", "#5c4a00", "#7a6200", "#b39100", "#ffcc00", "#ffd93d", "#ffe77b", "#fff4be"]
+      },
+      "bg": {
+        "role": "neutral",
+        "displayName": "Seitenfond",
+        "canonical": "#f5f5f7",
+        "darkValue": "#1c1c1e",
+        "tonalRamp": ["#000000", "#1c1c1e", "#2c2c2e", "#3a3a3c", "#6e6e73", "#98989d", "#f2f2f4", "#ffffff"]
+      },
+      "card": {
+        "role": "neutral",
+        "displayName": "Kartenfläche",
+        "canonical": "#ffffff",
+        "darkValue": "#2c2c2e",
+        "tonalRamp": ["#000000", "#1c1c1e", "#2c2c2e", "#3a3a3c", "#6e6e73", "#98989d", "#f2f2f4", "#ffffff"]
+      },
+      "card-2": {
+        "role": "neutral",
+        "displayName": "Eingabefläche",
+        "canonical": "#f2f2f4",
+        "darkValue": "#3a3a3c",
+        "tonalRamp": ["#000000", "#1c1c1e", "#2c2c2e", "#3a3a3c", "#6e6e73", "#98989d", "#f2f2f4", "#ffffff"]
+      },
+      "text": {
+        "role": "neutral",
+        "displayName": "Primärtext",
+        "canonical": "#1d1d1f",
+        "darkValue": "#f5f5f7",
+        "tonalRamp": ["#000000", "#1d1d1f", "#3a3a3c", "#6e6e73", "#98989d", "#c7c7cc", "#f2f2f4", "#ffffff"]
+      },
+      "text-2": {
+        "role": "neutral",
+        "displayName": "Sekundärtext",
+        "canonical": "#6e6e73",
+        "darkValue": "#98989d",
+        "tonalRamp": ["#000000", "#1d1d1f", "#3a3a3c", "#6e6e73", "#98989d", "#c7c7cc", "#f2f2f4", "#ffffff"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Seitentitel der fünf Tabs, mit Unterzeile für Datum oder Kontext." },
+      "headline": { "displayName": "Headline", "purpose": "Titel in Detailansichten — Übung, Training, Plan-Editor." },
+      "title": { "displayName": "Title", "purpose": "Sheet-Titel und Name des laufenden Trainings." },
+      "metric": { "displayName": "Metric", "purpose": "Jede KPI-Zahl. Immer tabular-nums." },
+      "body": { "displayName": "Body", "purpose": "Fließtext, Buttons, Eingabefelder. 17 px ist die iOS-Zoom-Grenze." },
+      "label": { "displayName": "Label", "purpose": "Abschnittsüberschriften in Versalien, Sekundärtext." },
+      "caption": { "displayName": "Caption", "purpose": "Unterzeilen, Metadaten, Hilfstexte." }
+    },
+    "shadows": [
+      {
+        "name": "ambient",
+        "value": "0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.06)",
+        "darkValue": "0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.35)",
+        "purpose": "Ruhende Flächen: Karte, Listeneintrag, Stat-Kachel, Chip, Einstellungszeile. Liegt im Bestand auf fast jedem Element — Kandidat für Reduktion."
+      },
+      {
+        "name": "lifted",
+        "value": "0 2px 8px rgba(0,0,0,0.08), 0 16px 48px rgba(0,0,0,0.14)",
+        "darkValue": "0 2px 8px rgba(0,0,0,0.4), 0 16px 48px rgba(0,0,0,0.55)",
+        "purpose": "Echt schwebende Ebenen: Bottom-Sheet, Toast, Chart-Tooltip, Start-Kreis, Rücksprung-Button."
+      },
+      {
+        "name": "material-bar",
+        "value": "backdrop-filter: blur(24px) saturate(1.6)",
+        "purpose": "Tab-Bar, Timer-Bar und Workout-Kopf über halbdeckender Fondfarbe. Die einzige echte Tiefe im System."
+      }
+    ],
+    "motion": [
+      { "name": "tap-scale", "value": "transform .12s ease", "purpose": "Antippbare Karte und Plan-Kachel: scale(0.98) bzw. scale(0.96) bei :active." },
+      { "name": "sheet-up", "value": "translateY(40%) → 0 über .25s ease, opacity .5 → 1", "purpose": "Einfahrt des Bottom-Sheets. Es gibt keine Ausfahrt — das Sheet wird hart ausgeblendet." },
+      { "name": "toast", "value": "opacity .25s, transform .25s", "purpose": "Toast fährt 20 px von unten ein." },
+      { "name": "switch", "value": "background .2s, transform .2s", "purpose": "Schalter-Knopf und -Spur." },
+      { "name": "timer-progress", "value": "width .4s linear", "purpose": "Fortschrittsbalken der Pause. Animiert width — Layout-Thrash alle 500 ms, Befund." }
+    ],
+    "breakpoints": [
+      { "name": "set-row-wide", "value": "480px" },
+      { "name": "beyond-phone", "value": "561px" },
+      { "name": "container-max", "value": "560px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Der eine wichtigste Weg auf dem Bildschirm. Kein Hover — nur ein Deckkraft-Abfall bei :active.",
+      "html": "<button class=\"ds-btn ds-btn-primary\">Mit Strava verbinden</button>",
+      "css": ".ds-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: none; border-radius: 12px; padding: 12px 16px; min-height: 48px; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; font-size: 17px; font-weight: 650; cursor: pointer; -webkit-tap-highlight-color: transparent; } .ds-btn-primary { background: var(--blue, #0071e3); color: #fff; } .ds-btn-primary:active { opacity: .75; } .ds-btn-primary:focus-visible { outline: 2px solid var(--blue, #0071e3); outline-offset: 2px; }"
+    },
+    {
+      "name": "Soft Button",
+      "kind": "button",
+      "refersTo": "button-soft",
+      "description": "Additive Aktionen — „+ Übung hinzufügen\". Weicher Akzentgrund, Akzenttext.",
+      "html": "<button class=\"ds-btn ds-btn-soft\">+ Übung hinzufügen</button>",
+      "css": ".ds-btn-soft { display: inline-flex; align-items: center; justify-content: center; width: 100%; border: none; border-radius: 12px; padding: 12px 16px; min-height: 48px; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; font-size: 17px; font-weight: 650; background: var(--blue-soft, rgba(0,113,227,0.10)); color: var(--blue, #0071e3); cursor: pointer; } .ds-btn-soft:active { opacity: .75; }"
+    },
+    {
+      "name": "List Item",
+      "kind": "nav",
+      "refersTo": "list-item",
+      "description": "Der Arbeitsgaul der App: Kachel links, Titel plus Unterzeile in der Mitte, Wert und Chevron rechts.",
+      "html": "<button class=\"ds-li\"><span class=\"ds-li-thumb\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\"><rect x=\"3.5\" y=\"7\" width=\"4\" height=\"10\" rx=\"1.5\"/><rect x=\"16.5\" y=\"7\" width=\"4\" height=\"10\" rx=\"1.5\"/><line x1=\"7.5\" y1=\"12\" x2=\"16.5\" y2=\"12\"/></svg></span><span class=\"ds-li-main\"><span class=\"ds-li-title\">Schrägbankdrücken</span><span class=\"ds-li-sub\">Kurzhantel · Grundübung</span></span><span class=\"ds-li-side\">32,5 × 8</span><span class=\"ds-li-chev\">&rsaquo;</span></button>",
+      "css": ".ds-li { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; border: none; cursor: pointer; background: var(--card, #fff); color: var(--text, #1d1d1f); border-radius: 14px; box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.06); padding: 13px 14px; min-height: 56px; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; } .ds-li:active { transform: scale(0.99); } .ds-li-thumb { width: 38px; height: 38px; border-radius: 10px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; background: rgba(58,134,255,0.16); color: #3a86ff; } .ds-li-thumb svg { width: 24px; height: 24px; display: block; } .ds-li-main { flex: 1; min-width: 0; display: block; } .ds-li-title { display: block; font-weight: 650; font-size: 16px; } .ds-li-sub { display: block; font-size: 13px; color: var(--text-2, #6e6e73); margin-top: 2px; } .ds-li-side { font-size: 13px; color: var(--text-2, #6e6e73); flex-shrink: 0; } .ds-li-chev { color: var(--text-2, #6e6e73); font-size: 15px; flex-shrink: 0; }"
+    },
+    {
+      "name": "Set Row",
+      "kind": "custom",
+      "refersTo": "num-input",
+      "description": "Signature-Element: fünfspaltige Satzzeile im aktiven Training. Hier links im offenen, rechts im abgehakten Zustand.",
+      "html": "<div class=\"ds-set\"><button class=\"ds-w\">2</button><span class=\"ds-num\"><button class=\"ds-step\">&minus;</button><input class=\"ds-inp\" value=\"32,5\" inputmode=\"decimal\"><button class=\"ds-step\">+</button></span><span class=\"ds-num\"><button class=\"ds-step\">&minus;</button><input class=\"ds-inp\" value=\"8\" inputmode=\"numeric\"><button class=\"ds-step\">+</button></span><select class=\"ds-rpe\"><option>RPE</option></select><button class=\"ds-check\">&#10003;</button></div>",
+      "css": ".ds-set { display: grid; grid-template-columns: 24px 1fr 1fr 42px 42px; gap: 4px; align-items: center; padding: 6px 5px; border-bottom: 1px solid var(--sep, rgba(0,0,0,0.08)); border-radius: 10px; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; } .ds-w { width: 24px; height: 40px; border: none; border-radius: 8px; font-size: 13px; font-weight: 800; color: var(--text-2, #6e6e73); background: var(--card-2, #f2f2f4); cursor: pointer; } .ds-num { display: flex; align-items: stretch; gap: 2px; min-width: 0; } .ds-step { width: 24px; border: none; border-radius: 8px; background: var(--card-2, #f2f2f4); color: var(--text-2, #6e6e73); font-size: 16px; font-weight: 700; flex-shrink: 0; min-height: 40px; cursor: pointer; } .ds-inp { width: 100%; min-width: 0; text-align: center; border: none; border-radius: 8px; background: var(--card-2, #f2f2f4); min-height: 40px; font-weight: 700; font-size: 16px; font-variant-numeric: tabular-nums; color: var(--text, #1d1d1f); font-family: inherit; } .ds-inp:focus { outline: 2px solid var(--blue, #0071e3); background: var(--card, #fff); } .ds-rpe { width: 42px; min-height: 40px; border: none; border-radius: 8px; background: var(--card-2, #f2f2f4); color: var(--text-2, #6e6e73); font-size: 16px; font-weight: 700; text-align: center; appearance: none; -webkit-appearance: none; font-family: inherit; } .ds-check { width: 42px; height: 44px; border: none; border-radius: 11px; font-size: 19px; font-weight: 800; background: var(--card-2, #f2f2f4); color: var(--text-2, #6e6e73); display: flex; align-items: center; justify-content: center; cursor: pointer; } .ds-check:active { transform: scale(0.94); }"
+    },
+    {
+      "name": "Filter Chip",
+      "kind": "chip",
+      "refersTo": "chip",
+      "description": "Muskelgruppen- und Geräte-Filter in einer horizontal scrollenden Reihe. Aktiv = blau gefüllt.",
+      "html": "<span class=\"ds-chiprow\"><button class=\"ds-chip ds-chip-on\">Alle</button><button class=\"ds-chip\">Brust</button><button class=\"ds-chip\">Rücken</button><button class=\"ds-chip\">Beine</button></span>",
+      "css": ".ds-chiprow { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 8px; scrollbar-width: none; } .ds-chiprow::-webkit-scrollbar { display: none; } .ds-chip { flex-shrink: 0; border: none; padding: 7px 13px; border-radius: 999px; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; font-size: 14px; font-weight: 600; background: var(--card, #fff); color: var(--text-2, #6e6e73); box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.06); min-height: 34px; cursor: pointer; } .ds-chip-on { background: var(--blue, #0071e3); color: #fff; }"
+    },
+    {
+      "name": "Stat Tile",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "KPI-Kachel im Profil-Dashboard. Metrik oben groß, Label darunter klein — zwei oder drei pro Reihe.",
+      "html": "<span class=\"ds-stats\"><span class=\"ds-tile\"><span class=\"ds-val ds-val-blue\">148</span><span class=\"ds-lab\">Trainings gesamt</span></span><span class=\"ds-tile\"><span class=\"ds-val\">92,4 t</span><span class=\"ds-lab\">Volumen (30 Tage)</span></span></span>",
+      "css": ".ds-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; } .ds-tile { background: var(--card, #fff); border-radius: 14px; box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.06); padding: 12px 14px; display: block; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; } .ds-val { display: block; font-size: 22px; font-weight: 800; letter-spacing: -0.4px; font-variant-numeric: tabular-nums; color: var(--text, #1d1d1f); } .ds-val-blue { color: var(--blue, #0071e3); } .ds-lab { display: block; font-size: 12px; color: var(--text-2, #6e6e73); font-weight: 600; margin-top: 2px; }"
+    },
+    {
+      "name": "Volume Bar",
+      "kind": "custom",
+      "refersTo": "card",
+      "description": "Signature: Ist-Sätze gegen einen Zielbereich statt gegen einen Zielwert. Die grüne Zone ist der Korridor, der farbige Balken der Istwert.",
+      "html": "<span class=\"ds-vol\"><span class=\"ds-vol-head\"><span class=\"ds-vol-mg\">Brust</span><span class=\"ds-vol-ist\">14</span><span class=\"ds-vol-ziel\">/ 12–18 Sätze</span></span><span class=\"ds-vol-bar\"><span class=\"ds-vol-zone\"></span><span class=\"ds-vol-fill\"></span></span><span class=\"ds-vol-status\">Im optimalen Bereich</span></span>",
+      "css": ".ds-vol { display: block; background: var(--card, #fff); border-radius: 14px; box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.06); padding: 11px 14px; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; } .ds-vol-head { display: flex; align-items: baseline; gap: 6px; } .ds-vol-mg { font-weight: 700; font-size: 15px; flex: 1; color: var(--text, #1d1d1f); } .ds-vol-ist { font-weight: 800; font-size: 16px; font-variant-numeric: tabular-nums; color: var(--text, #1d1d1f); } .ds-vol-ziel { font-size: 12px; color: var(--text-2, #6e6e73); } .ds-vol-bar { position: relative; display: block; height: 10px; border-radius: 5px; background: var(--card-2, #f2f2f4); margin-top: 8px; overflow: hidden; } .ds-vol-zone { position: absolute; top: 0; bottom: 0; left: 49%; width: 25%; background: rgba(52,199,89,0.14); } .ds-vol-fill { position: absolute; top: 2px; bottom: 2px; left: 0; width: 58%; border-radius: 4px; background: var(--green, #34c759); } .ds-vol-status { display: block; font-size: 12.5px; margin-top: 7px; font-weight: 600; color: var(--green, #34c759); }"
+    },
+    {
+      "name": "Tab Bar",
+      "kind": "nav",
+      "refersTo": "tabbar",
+      "description": "Fünf Tabs mit Blur-Material und herausgehobenem Start-Kreis in der Mitte. Sektionen, keine Aktionen.",
+      "html": "<span class=\"ds-tabs\"><button class=\"ds-tab\"><svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"8\" r=\"3.6\"/><path d=\"M4.5 19.5c1.2-3.4 4-5.1 7.5-5.1s6.3 1.7 7.5 5.1\"/></svg><span class=\"ds-tlab\">Profil</span></button><button class=\"ds-tab\"><svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"8.5\"/><path d=\"M12 7.5V12l3 2.5\"/></svg><span class=\"ds-tlab\">Verlauf</span></button><button class=\"ds-tab ds-tab-start\"><span class=\"ds-circle\"><svg viewBox=\"0 0 24 24\"><path d=\"M9.2 7.2l7.6 4.8-7.6 4.8z\"/></svg></span><span class=\"ds-tlab\">Start</span></button><button class=\"ds-tab ds-tab-on\"><svg viewBox=\"0 0 24 24\"><path d=\"M7 7.5v9M17 7.5v9M7 12h10M3.5 9.5v5M20.5 9.5v5\"/></svg><span class=\"ds-tlab\">Übungen</span></button><button class=\"ds-tab\"><svg viewBox=\"0 0 24 24\"><path d=\"M4.5 8h15M4.5 16h15\"/><circle cx=\"9.5\" cy=\"8\" r=\"2.1\"/><circle cx=\"14.5\" cy=\"16\" r=\"2.1\"/></svg><span class=\"ds-tlab\">Daten</span></button></span>",
+      "css": ".ds-tabs { display: flex; background: var(--bg-elev, rgba(255,255,255,0.82)); -webkit-backdrop-filter: blur(24px) saturate(1.6); backdrop-filter: blur(24px) saturate(1.6); border-top: 1px solid var(--sep, rgba(0,0,0,0.08)); font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; } .ds-tab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 8px 0 6px; min-height: 54px; border: none; background: none; color: var(--text-2, #6e6e73); cursor: pointer; } .ds-tab svg { width: 23px; height: 23px; display: block; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; } .ds-tlab { font-size: 10px; font-weight: 600; } .ds-tab-on { color: var(--blue, #0071e3); } .ds-circle { width: 42px; height: 42px; margin-top: -16px; border-radius: 50%; background: var(--blue, #0071e3); color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.08), 0 16px 48px rgba(0,0,0,0.14); display: flex; align-items: center; justify-content: center; border: 3px solid var(--bg, #f5f5f7); } .ds-circle svg { width: 20px; height: 20px; fill: currentColor; stroke: none; } .ds-tab-start:active .ds-circle { transform: scale(0.94); }"
+    },
+    {
+      "name": "Toggle Switch",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Einstellungsschalter im iOS-Format. Grün bei An — die einzige Stelle, an der Grün nicht „erledigt\" heißt, sondern „aktiv\".",
+      "html": "<span class=\"ds-setrow\"><span class=\"ds-li-main\"><span class=\"ds-li-title\">Intelligenter Coach</span><span class=\"ds-li-sub\">Pausen und Steigerungen je nach Übungstyp</span></span><label class=\"ds-switch\"><input type=\"checkbox\" checked><span class=\"ds-knob\"></span></label></span>",
+      "css": ".ds-setrow { display: flex; align-items: center; gap: 12px; background: var(--card, #fff); border-radius: 14px; box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 8px 24px rgba(0,0,0,0.06); padding: 12px 14px; min-height: 56px; font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif; } .ds-switch { position: relative; width: 52px; height: 32px; flex-shrink: 0; } .ds-switch input { opacity: 0; width: 100%; height: 100%; position: absolute; z-index: 2; cursor: pointer; margin: 0; } .ds-knob { position: absolute; inset: 0; background: var(--card-2, #f2f2f4); border-radius: 999px; transition: background .2s; } .ds-knob::after { content: ''; position: absolute; top: 3px; left: 3px; width: 26px; height: 26px; background: #fff; border-radius: 50%; box-shadow: 0 1px 3px rgba(0,0,0,0.25); transition: transform .2s; } .ds-switch input:checked + .ds-knob { background: var(--green, #34c759); } .ds-switch input:checked + .ds-knob::after { transform: translateX(20px); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Das Klemmbrett aus der Werkstatt-Vitrine",
+    "overview": "Kraftlog ist ein Arbeitsgerät, das während der Belastung bedient wird: verschwitzte Finger, eine Hand an der Hantel, 90 Sekunden Zeit. Die gesamte Gestaltung folgt daraus. Sie leiht sich die Sprache von iOS — SF Pro, Systemfarben, Blur-Bars, Safe-Area — nicht aus Stilverliebtheit, sondern weil das die Sprache ist, die die Hand schon kann.\n\nDie Dichte ist bewusst zweistufig. Übersichten sind großzügig, kartig, ruhig — man scrollt sie zwischen den Sätzen. Das aktive Workout ist das genaue Gegenteil: eine tabellarische Satzzeile mit fünf Spalten auf 375 pt Breite, Zahlen in tabularen Ziffern, nichts Dekoratives. Dort wird nicht gelesen, dort wird getippt.\n\nFarbe ist streng rationiert. Blau ist die einzige Interaktionsfarbe, Grün heißt „erledigt\", Orange „Achtung\", Rot „zerstörend\", Gold „Rekord\". Es gibt keine Markenfarbe außerhalb dieser fünf Rollen und keine dekorative Farbfläche.",
+    "keyCharacteristics": [
+      "Apple-nativ als Bedienbarkeitsentscheidung, nicht als Zitat",
+      "Dark/Light vollautomatisch, dreifach steuerbar (System · erzwungen hell · erzwungen dunkel)",
+      "Keine Emojis in der UI — ausschließlich Inline-SVG",
+      "Nur Hochformat, max. 560 px Inhaltsbreite, immer einspaltig",
+      "Deutsch, Komma als Dezimaltrennzeichen, tabulare Ziffern überall wo Werte verglichen werden",
+      "Offline-first: keine Webfonts, keine externen Bilder, keine Libraries"
+    ],
+    "rules": [
+      { "name": "Die Ein-Stimmen-Regel", "body": "Blau ist die einzige Farbe, die „tipp mich\" sagt. Grün, Orange, Rot und Gold sind Zustandsmeldungen und nie anklickbar — mit der einzigen bewussten Ausnahme des grünen „Fertig\"-Buttons.", "section": "colors" },
+      { "name": "Die Nie-im-Markup-Regel", "body": "Keine Farbe wird als Hex in charts.js oder in einem style-Attribut gesetzt. Läuft alles über var(--…), kostet Dark Mode null Zeilen Code.", "section": "colors" },
+      { "name": "Die Gold-ist-selten-Regel", "body": "Gold erscheint nur, wenn tatsächlich ein Rekord fiel. Ein Gold, das jeden Satz begleitet, ist kein Rekord mehr.", "section": "colors" },
+      { "name": "Die Tabellenziffern-Regel", "body": "Jede Zahl, die sich ändert oder verglichen wird — Timer, Trainingsdauer, kg, Wiederholungen, Volumen, KPI-Werte — steht in tabular-nums. Springende Ziffernbreiten lesen sich als Fehler.", "section": "typography" },
+      { "name": "Die 17-px-Regel", "body": "Kein Eingabefeld geht unter 17 px. Safari zoomt sonst beim Fokus in das Feld hinein und reißt die Ansicht auseinander — mitten im Satz.", "section": "typography" },
+      { "name": "Die Kein-Rahmen-Regel", "body": "Kontur ist Haarlinie oder gar nichts. Ein 2-px-Rahmen in Akzentfarbe existiert nirgends und soll nirgends entstehen.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do jede Farbe über var(--…) beziehen — auch in charts.js, auch in Inline-Styles.",
+      "Do font-variant-numeric: tabular-nums auf jede Zahl setzen, die sich ändert oder verglichen wird.",
+      "Do Eingabefelder bei mindestens 17 px halten (iOS-Zoom-Grenze).",
+      "Do env(safe-area-inset-*) überall dort einrechnen, wo etwas am Rand klebt.",
+      "Do Icons ausschließlich als Inline-SVG mit fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round zeichnen.",
+      "Do Zustand über Farbrolle ausdrücken und nicht über Ausnahmegestaltung.",
+      "Do neue Flächen in der Radien-Leiter verorten: 14 px ist der Systemradius für alles Kartenartige."
+    ],
+    "donts": [
+      "Don't Emojis in die Oberfläche schreiben. Auch nicht als schnelle Ikone in einem Leerzustand.",
+      "Don't eine Webfont, eine zweite Schriftfamilie oder eine Icon-Library einführen.",
+      "Don't ein Bedienelement unter 44 × 44 pt bauen.",
+      "Don't Affordanzen an :hover hängen. Auf dem iPhone existiert kein Hover.",
+      "Don't einen 2-px-Akzentrahmen an eine Karte setzen. Kontur ist Haarlinie oder nichts.",
+      "Don't Gold, Grün, Orange oder Rot als Dekoration verwenden — sie sind Meldungen.",
+      "Don't width, height, padding oder margin animieren.",
+      "Don't Querformat-Layouts entwerfen. Die App sperrt es bewusst."
+    ]
+  }
+}
