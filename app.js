@@ -1035,6 +1035,55 @@ function checkSet(xi, si) {
   render();
 }
 
+/* --- Pausenrad ---------------------------------------------------------
+   Zwei gerastete Spalten (Minuten, Sekunden in 5er-Schritten). Der Wert ist die
+   Zahl, die unter dem Band steht: Position = Index × Zeilenhöhe. Es hängt bewusst
+   kein Scroll-Listener daran — gelesen wird erst beim Start, und das Band ist
+   die Anzeige. Damit bleibt die Event-Delegation das einzige Muster. */
+const RAD_ITEM = 44;          // Zeilenhöhe, muss zu .rad-item in style.css passen
+const RAD_SEK_SCHRITT = 5;    // Sekundenraster — feiner braucht eine Satzpause nicht
+const RAD_MIN_MAX = 15;
+
+function radSpalteHtml(name, werte, label) {
+  return '<div class="rad" data-rad="' + name + '" role="listbox" aria-label="' + label + '">' +
+    '<div class="rad-pad"></div>' +
+    werte.map((w, i) => '<button class="rad-item" role="option" data-action="rad-pick" data-i="' + i + '">' + w + '</button>').join('') +
+    '<div class="rad-pad"></div></div>';
+}
+function radHtml() {
+  const min = [];
+  for (let i = 0; i <= RAD_MIN_MAX; i++) min.push(i);
+  const sek = [];
+  for (let i = 0; i < 60; i += RAD_SEK_SCHRITT) sek.push(String(i).padStart(2, '0'));
+  return '<div class="rad-wrap"><div class="rad-band" aria-hidden="true"></div>' +
+    radSpalteHtml('min', min, 'Minuten') + '<span class="rad-unit">min</span>' +
+    radSpalteHtml('sek', sek, 'Sekunden') + '<span class="rad-unit">s</span></div>';
+}
+/* Schreibt die gerade eingestellte Dauer in den Startknopf — man sieht beim
+   Rollen, was man bekommt, statt es aus zwei Spalten zusammenrechnen zu müssen. */
+function radWertAnzeigen() {
+  const w = $('#rad-wert');
+  if (w) w.textContent = fmtMinSek(radDauerLesen());
+}
+function radPositionSetzen(minIdx, sekIdx) {
+  /* Erst im nächsten Frame steht das Layout des frisch eingefügten Sheets */
+  requestAnimationFrame(() => {
+    const m = document.querySelector('.rad[data-rad="min"]');
+    const s = document.querySelector('.rad[data-rad="sek"]');
+    if (m) m.scrollTop = Math.max(0, Math.min(RAD_MIN_MAX, minIdx)) * RAD_ITEM;
+    if (s) s.scrollTop = Math.max(0, Math.min(60 / RAD_SEK_SCHRITT - 1, sekIdx)) * RAD_ITEM;
+    radWertAnzeigen();
+  });
+}
+function radDauerLesen() {
+  const m = document.querySelector('.rad[data-rad="min"]');
+  const s = document.querySelector('.rad[data-rad="sek"]');
+  if (!m || !s) return 0;
+  const min = Math.round(m.scrollTop / RAD_ITEM);
+  const sek = Math.round(s.scrollTop / RAD_ITEM) * RAD_SEK_SCHRITT;
+  return min * 60 + sek;
+}
+
 /* --- Freie Pause: Timer starten, ohne einen Satz abzuhaken ---
    exIdx/setIdx bleiben -1: es gibt keinen Satz, dem diese Pause zugerechnet wird.
    Alle Verbraucher (endRest, checkSet) sind gegen fehlende Indizes abgesichert. */
@@ -1326,6 +1375,8 @@ function renderTimerBar() {
   if (!aw.rest) {
     bar.classList.remove('hidden', 'over');
     bar.classList.add('idle');
+    const d = $('#timer-idle-dauer');
+    if (d) d.textContent = fmtMinSek(S.settings.letztePauseFrei || 150);
     if (rs) rs.style.bottom = 'calc(64px + env(safe-area-inset-bottom))';
     return;
   }
@@ -1347,11 +1398,12 @@ function renderTimerBar() {
   const anteil = Math.min(1, el / t);
   if (anteil < 0.04) { p.style.transition = 'none'; p.style.transform = 'scaleX(' + anteil.toFixed(4) + ')'; void p.offsetWidth; p.style.transition = ''; }
   else p.style.transform = 'scaleX(' + anteil.toFixed(4) + ')';
-  const gesamt = ' · Training ' + fmtDauer((Date.now() - aw.startedAt) / 1000);
-  const label = aw.rest.manuell ? 'Freie Pause' : 'Ziel';
+  /* Die Trainingsdauer steht schon im Workout-Kopf bzw. auf dem Rücksprung-Knopf —
+     hier wäre sie doppelt und würde die Unterzeile in den Umbruch treiben. */
+  const label = aw.rest.manuell ? 'Frei' : 'Ziel';
   $('#timer-text').innerHTML = over
-    ? 'Pause vorbei <small>+' + fmtMinSek(el - t) + gesamt + '</small>'
-    : fmtMinSek(t - el) + ' <small>' + label + ' ' + fmtMinSek(t) + gesamt + '</small>';
+    ? 'Pause vorbei <small>+' + fmtMinSek(el - t) + '</small>'
+    : fmtMinSek(t - el) + ' <small>' + label + ' ' + fmtMinSek(t) + '</small>';
   if (over && !aw.rest.signaled) {
     aw.rest.signaled = true;
     save();
@@ -3307,25 +3359,30 @@ const ACTIONS = {
     renderTimerBar();
   },
   /* Freie Pause aus der Schnellwahl — unabhängig vom Satz-Abhaken */
-  'rest-manuell': el => startRest(+el.dataset.sec, true),
   'rest-frei': () => {
-    const letzte = S.settings.letztePauseFrei || 150;
+    const letzte = Math.max(RAD_SEK_SCHRITT, S.settings.letztePauseFrei || 150);
     openSheet('<div class="sheet-title">Pause starten</div>' +
-      '<div class="sheet-sub">Läuft unabhängig von den Sätzen — für Dehnen, Trinken oder eine Extrapause.</div>' +
-      '<div class="rest-quick">' +
-      [45, 60, 90, 120, 150, 180, 240, 300].map(s =>
-        '<button class="btn" data-action="rest-manuell" data-sec="' + s + '">' + fmtMinSek(s) + '</button>').join('') +
-      '</div>' +
-      '<div class="form-row mt-l"><label>Eigene Dauer (Sekunden)</label>' +
-      '<input class="input" id="rest-frei-sec" inputmode="numeric" placeholder="z. B. 210" value="' + letzte + '"></div>' +
-      '<div class="sheet-actions"><button class="btn btn-primary" data-action="rest-frei-start">Pause starten</button></div>');
+      '<div class="sheet-sub">Läuft unabhängig von den Sätzen — fürs Dehnen, Trinken oder eine Extrapause.</div>' +
+      radHtml() +
+      '<div class="sheet-actions"><button class="btn btn-primary" data-action="rest-frei-start">' +
+      'Pause starten <span class="rad-wert" id="rad-wert">' + fmtMinSek(letzte) + '</span></button>' +
+      '<button class="btn" data-action="sheet-close">Abbrechen</button></div>');
+    radPositionSetzen(Math.floor(letzte / 60), Math.round((letzte % 60) / RAD_SEK_SCHRITT));
+  },
+  /* Tippen auf eine Zahl schiebt sie unter das Band — Rollen ist nicht Pflicht.
+     Bewusst ohne 'smooth': sonst liest ein sofort folgender Start-Tipp die
+     Position mitten im Flug und startet die falsche Dauer. */
+  'rad-pick': el => {
+    const rad = el.closest('.rad');
+    if (!rad) return;
+    rad.scrollTop = (+el.dataset.i) * RAD_ITEM;
+    radWertAnzeigen();
   },
   'rest-frei-start': () => {
-    const v = parseNum($('#rest-frei-sec').value);
-    if (!(v > 0)) { showToast('Bitte eine Dauer in Sekunden eingeben'); return; }
-    S.settings.letztePauseFrei = Math.max(10, Math.min(3600, Math.round(v)));
-    closeSheet();
-    startRest(S.settings.letztePauseFrei, true);
+    const sec = radDauerLesen();
+    if (!(sec >= 10)) { showToast('Mindestens 10 Sekunden'); return; }
+    S.settings.letztePauseFrei = sec;
+    startRest(sec, true);   // schließt das Sheet selbst
   },
   'pick-ex': el => {
     const cb = pickerCb;
@@ -3900,6 +3957,18 @@ document.addEventListener('change', e => {
     return;
   }
 });
+
+/* Pausenrad: die eingestellte Dauer live in den Startknopf schreiben.
+   scroll steigt nicht auf, deshalb Capture-Phase — es bleibt ein einziger
+   delegierter Listener auf document, kein Handler an den Rädern selbst.
+   Per rAF gedrosselt, weil scroll sehr oft feuert. */
+let radFrame = 0;
+document.addEventListener('scroll', e => {
+  const ziel = e.target;
+  if (!ziel || !ziel.classList || !ziel.classList.contains('rad')) return;
+  if (radFrame) return;
+  radFrame = requestAnimationFrame(() => { radFrame = 0; radWertAnzeigen(); });
+}, true);
 
 /* Beim Antippen eines Zahlenfelds den ganzen Wert markieren → direkt überschreiben, ohne erst zu löschen */
 document.addEventListener('focusin', e => {
