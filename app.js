@@ -314,9 +314,25 @@ function allPrEvents() {
 }
 
 /* ---------- Aufwärmsätze berechnen ----------
- * Rampe in Prozent des Arbeitsgewichts, mit weniger Wdh. je schwerer.
- * Für Langhantel/SZ/Multipresse startet es mit der leeren Stange; nie über dem Arbeitsgewicht.
- * Gerundet auf 2,5-kg-Schritte. Rückgabe: [{ kg, reps }] (aufsteigend). */
+ * Kurze Rampe in Prozent des Arbeitsgewichts, mit weniger Wdh. je schwerer:
+ * Gewebe und Nervensystem hochfahren und das Bewegungsmuster einschleifen, ohne
+ * dem ersten Arbeitssatz Kraft wegzunehmen. Zwei feste Längen:
+ *   3 Sätze für die großen Muskelgruppen (Beine, Gesäß, Brust, Rücken) — dort
+ *     ist die Last hoch und der Weg vom Startgewicht bis oben weit.
+ *   2 Sätze für Schultern, Arme und den Rest — kleinere Lasten, kürzerer Weg.
+ * Mehr Sätze bringen nichts dazu, sie kosten nur Kraft für die Arbeitssätze.
+ * Für Langhantel/SZ/Multipresse liegt kein Satz unter der leeren Stange — bei
+ * schweren Übungen wird der erste Satz dadurch von selbst zum Stangensatz.
+ * Nie auf oder über dem Arbeitsgewicht, gerundet auf 2,5-kg-Schritte.
+ * Rückgabe: [{ kg, reps }] (aufsteigend). */
+const WARMUP_GROSS = ['Beine', 'Gesäß', 'Brust', 'Rücken'];
+const WARMUP_RAMPEN = {
+  3: [[0.50, 8], [0.70, 4], [0.85, 2]],
+  2: [[0.50, 8], [0.75, 4]]
+};
+function warmupSatzzahl(ex) {
+  return (ex && WARMUP_GROSS.indexOf(ex.mg) >= 0) ? 3 : 2;
+}
 function computeWarmup(targetKg, ex) {
   const out = [];
   targetKg = +targetKg;
@@ -329,14 +345,11 @@ function computeWarmup(targetKg, ex) {
     if (out.length && kg <= out[out.length - 1].kg) return; // streng aufsteigend
     out.push({ kg, reps });
   };
-  if (isBar && targetKg >= barKg * 2) out.push({ kg: barKg, reps: 12 }); // leere Stange
-  const rampe = targetKg < 40 ? [[0.5, 8], [0.75, 5]] : [[0.5, 8], [0.7, 5], [0.85, 3]];
-  for (const [pct, reps] of rampe) {
+  for (const [pct, reps] of WARMUP_RAMPEN[warmupSatzzahl(ex)]) {
     let w = round(targetKg * pct);
     if (isBar) w = Math.max(w, barKg);
     push(w, reps);
   }
-  if (targetKg >= 60) push(round(targetKg * 0.92), 1);     // schwerer Einzelsatz vor der Arbeit
   return out;
 }
 function warmupPreviewHtml(exId, targetKg) {
@@ -463,12 +476,41 @@ function burstConfetti() {
 }
 let pickerCb = null;
 let sheetCloseTimer = null;
+
+/* --- Weiche Tastatur: das Sheet legt sich davor, nicht darunter ---
+ * Ein fixiertes Element hängt am Layout-Viewport, und der schrumpft nicht, wenn
+ * die Tastatur aufgeht — das Sheet und damit die halbe Trefferliste rutschen
+ * darunter. visualViewport sagt, wie viel unten verdeckt ist; --kb hebt das
+ * Sheet um genau diesen Betrag an, --vvh deckelt seine Höhe auf das, was noch
+ * sichtbar ist. Ohne visualViewport (alte Browser) bleibt alles beim Alten.
+ * offsetTop zählt mit: iOS schiebt bei fokussiertem Feld zusätzlich den ganzen
+ * Layout-Viewport nach oben. */
+function viewportSync() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const wurzel = document.documentElement;
+  const roh = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+  /* 80 px Schwelle: die ein- und ausfahrende Safari-Leiste ist keine Tastatur —
+     unterhalb davon bleibt das Sheet, wo es ist, statt bei jedem Scrollen zu zucken. */
+  const kb = roh > 80 ? roh : 0;
+  wurzel.style.setProperty('--kb', kb + 'px');
+  wurzel.style.setProperty('--vvh', Math.round(vv.height) + 'px');
+  $('#sheet').classList.toggle('kb-auf', kb > 0);
+}
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', viewportSync);
+  window.visualViewport.addEventListener('scroll', viewportSync);
+  window.addEventListener('orientationchange', () => setTimeout(viewportSync, 250));
+  viewportSync();
+}
+
 function openSheet(html) {
   clearTimeout(sheetCloseTimer);
   const s = $('#sheet');
   s.classList.remove('closing');
   $('#sheet-content').innerHTML = html;
   s.classList.remove('hidden');
+  viewportSync();
 }
 /* Das Sheet fährt auf demselben Weg hinaus, auf dem es hereinkam. Erst danach
    wird der Inhalt geleert — sonst klappt die Fläche mitten in der Ausfahrt zusammen. */
@@ -506,6 +548,10 @@ let tab = 'start';
 let trainSub = null;     // null | 'plaene' | 'tpl-editor'
 let tplDraft = null;     // Arbeitskopie im Vorlagen-Editor
 let planAuswahl = null;  // Set von Plan-IDs im Auswahlmodus (null = normal)
+/* Auswahlmodus für Sätze im laufenden Training: { xi, sets: Set<Satzindex> }.
+   Gilt immer nur für eine Übung — Sätze gehören zu genau einer Übungskarte,
+   und der Modus soll die übrigen Karten nicht mitsperren. */
+let satzAuswahl = null;
 let zeigeWorkout = true; // false = laufendes Training ist minimiert (Start zeigt die normale Übersicht)
 let uebSub = null;       // null | { exId }
 let uebFilter = { q: '', mg: null, eq: null };
@@ -835,6 +881,9 @@ function renderActiveWorkout() {
     h += leerHtml('hantel', 'Noch keine Übung',
       'Freies Training: nimm unten die erste Übung auf. Werte vom letzten Mal werden automatisch vorbelegt.');
   }
+  /* Der Auswahlmodus hängt an einem Index. Verschwindet die Übung unter ihm
+     (ersetzt, entfernt, Training neu aufgebaut), fällt er zurück auf normal. */
+  if (satzAuswahl && !aw.exercises[satzAuswahl.xi]) satzAuswahl = null;
   aw.exercises.forEach((wex, xi) => { h += renderExCard(wex, xi); });
   h += '<button class="btn btn-block btn-soft" data-action="wo-add-ex">+ Übung hinzufügen</button>';
   popSet = null;   // die Haken-Quittung gilt genau für diesen einen Aufbau
@@ -880,16 +929,24 @@ function renderExCard(wex, xi) {
       '<button class="prog-chip ' + cls + '" data-action="prog-apply" data-ex="' + xi + '" data-kg="' + prog.kg + '"' + (prog.reps ? ' data-reps="' + prog.reps + '"' : '') + '>' + esc(prog.text) + '</button>' + warum + '</div>';
   }
   h += '<div class="set-cols"><span>Satz</span><span>' + (ex.bw ? '+kg' : 'kg') + '</span><span>Wdh.</span><span>RPE</span><span aria-hidden="true">✓</span></div>';
+  /* Im Auswahlmodus liegt über jeder Zeile eine unsichtbare Trefferfläche: der
+     ganze Satz ist dann das Ziel, nicht nur ein 30-pt-Kreis. Die Felder darunter
+     bleiben lesbar, sind aber stillgelegt — im Auswahlmodus wird nicht getippt. */
+  const auswahl = (satzAuswahl && satzAuswahl.xi === xi) ? satzAuswahl.sets : null;
   let wNum = 0;
   wex.sets.forEach((s, si) => {
     const done = s.done === true;
     if (!s.warmup) wNum++;
     const label = s.warmup ? 'W' : String(wNum);
-    const dis = done ? ' disabled' : '';
+    const an = !!auswahl && auswahl.has(si);
+    const dis = (done || auswahl) ? ' disabled' : '';
     const ds = ' data-ex="' + xi + '" data-set="' + si + '"';
     const pop = (popSet === xi + '-' + si) ? ' pop' : '';
-    h += '<div class="set-row' + (done ? ' done' : '') + (si === naechst && !done ? ' next' : '') + '">' +
-      '<button class="w-toggle' + (s.warmup ? ' on' : '') + '" data-action="set-optionen"' + ds + ' aria-label="Optionen für Satz ' + label + '">' + label + '</button>' +
+    h += '<div class="set-row' + (done ? ' done' : '') + (si === naechst && !done && !auswahl ? ' next' : '') +
+      (an ? ' set-sel-on' : '') + '">' +
+      (auswahl
+        ? '<span class="sel-dot sel-dot-num' + (an ? ' on' : '') + '" aria-hidden="true">' + label + '</span>'
+        : '<button class="w-toggle' + (s.warmup ? ' on' : '') + '" data-action="set-optionen"' + ds + ' aria-label="Optionen für Satz ' + label + '">' + label + '</button>') +
       '<div class="num-group">' +
       '<button class="step-btn" data-action="step" data-field="kg" data-dir="-1"' + ds + dis + ' aria-label="Gewicht verringern">−</button>' +
       '<input class="num-input" inputmode="decimal" autocomplete="off" aria-label="Gewicht" placeholder="' + (ex.bw ? '+kg' : 'kg') + '" value="' + fmtInput(s.kg) + '" data-winput="kg"' + ds + dis + '>' +
@@ -902,12 +959,27 @@ function renderExCard(wex, xi) {
       '<option value="">RPE</option>' +
       RPE_WERTE.map(r => '<option value="' + r + '"' + (String(s.rpe) === r ? ' selected' : '') + '>' + r.replace('.', ',') + '</option>').join('') +
       '</select>' +
-      '<button class="check-btn' + (done ? ' done' : '') + pop + '" data-action="check"' + ds + ' aria-label="Satz ' + label + ' abhaken">✓</button>' +
+      '<button class="check-btn' + (done ? ' done' : '') + pop + '" data-action="check"' + ds + dis + ' aria-label="Satz ' + label + ' abhaken">✓</button>' +
       setInfoLine(s) +
+      (auswahl
+        ? '<button class="set-sel-hit" data-action="satz-select"' + ds + ' role="checkbox" aria-checked="' + (an ? 'true' : 'false') +
+          '" aria-label="Satz ' + label + ' auswählen"></button>'
+        : '') +
       '</div>';
   });
-  h += '<div class="set-tools"><button class="add-set-btn" data-action="set-add" data-ex="' + xi + '">+ Satz</button>' +
-    '<button class="add-set-btn muted" data-action="set-del" data-ex="' + xi + '">− Satz</button></div>';
+  if (auswahl) {
+    h += '<div class="set-tools set-tools-sel">' +
+      '<span class="sel-count">' + auswahl.size + ' ausgewählt</span>' +
+      '<button class="add-set-btn" data-action="satz-select-all" data-ex="' + xi + '">' +
+      (auswahl.size === wex.sets.length ? 'Keine' : 'Alle') + '</button>' +
+      '<button class="add-set-btn danger" data-action="satz-select-del" data-ex="' + xi + '">Entfernen</button>' +
+      '<button class="add-set-btn muted" data-action="satz-select-mode" data-ex="' + xi + '">Fertig</button></div>';
+  } else {
+    h += '<div class="set-tools"><button class="add-set-btn" data-action="set-add" data-ex="' + xi + '">+ Satz</button>' +
+      '<button class="add-set-btn muted" data-action="set-del" data-ex="' + xi + '">− Satz</button>' +
+      (wex.sets.length > 1 ? '<button class="add-set-btn muted" data-action="satz-select-mode" data-ex="' + xi + '">Auswählen…</button>' : '') +
+      '</div>';
+  }
   return h + '</div>';
 }
 function setInfoLine(s) {
@@ -966,6 +1038,36 @@ function buildWoExercise(exId, tplSets, restSec) {
     repMax: repWerte.length ? Math.max(...repWerte) : null,
     restSec: restSec || null, notiz: null, sets
   };
+}
+/* Entfernt Sätze aus einer Übung des laufenden Trainings und zieht den
+   Pausen-Zeiger mit — sonst landet die gemessene Pause im falschen Satz.
+   Nimmt eine Liste von Indizes und arbeitet sie von hinten nach vorn ab, damit
+   sich mehrere Streichungen nicht gegenseitig verschieben. Bleibt kein Satz
+   übrig, verschwindet die Übung — eine Übung ohne Sätze ist keine Übung.
+   Gibt die Zahl der tatsächlich entfernten Sätze zurück. */
+function satzEntfernen(xi, indizes) {
+  const aw = S.activeWorkout;
+  if (!aw) return 0;
+  const wex = aw.exercises[xi];
+  if (!wex) return 0;
+  const idx = [...new Set(indizes)]
+    .filter(i => Number.isInteger(i) && i >= 0 && i < wex.sets.length)
+    .sort((a, b) => b - a);
+  for (const i of idx) {
+    wex.sets.splice(i, 1);
+    if (aw.rest && aw.rest.exIdx === xi) {
+      if (aw.rest.setIdx === i) { aw.rest = null; pauseWachEnde(); }
+      else if (aw.rest.setIdx > i) aw.rest.setIdx--;
+    }
+  }
+  if (idx.length && !wex.sets.length) {
+    aw.exercises.splice(xi, 1);
+    if (aw.rest) {
+      if (aw.rest.exIdx === xi) { aw.rest = null; pauseWachEnde(); }
+      else if (aw.rest.exIdx > xi) aw.rest.exIdx--;
+    }
+  }
+  return idx.length;
 }
 function startWorkout(tplId) {
   if (S.activeWorkout) { showToast('Es läuft bereits ein Training'); return; }
@@ -1126,6 +1228,7 @@ function finishWorkout() {
   S.workouts.push(w);
   S.workouts.sort((a, b) => a.startedAt - b.startedAt);
   S.activeWorkout = null;
+  satzAuswahl = null;
   pauseWachEnde();
   save();
   closeSheet();
@@ -1157,6 +1260,7 @@ function finishWorkout() {
 }
 function discardWorkout() {
   S.activeWorkout = null;
+  satzAuswahl = null;
   pauseWachEnde();
   save();
   closeSheet();
@@ -1510,10 +1614,12 @@ function renderTplEditor() {
 }
 
 /* --- Übungs-Picker (Sheet) --- */
+/* Das Suchfeld klebt oben: es bleibt sichtbar, während die Trefferliste darunter
+   scrollt — sonst tippt man in ein Feld, das man nicht mehr sieht. */
 function openExercisePicker(cb) {
   pickerCb = cb;
   openSheet('<div class="sheet-title">Übung wählen</div>' +
-    '<input class="input" placeholder="Suchen…" data-pinput="q" class="mb-m">' +
+    '<div class="picker-such"><input class="input" placeholder="Suchen…" data-pinput="q"></div>' +
     '<div id="picker-list">' + pickerListHtml('') + '</div>');
 }
 function pickerListHtml(q) {
@@ -2801,7 +2907,7 @@ function applyTheme() {
 
 /* ---------- Aktionen (Klick-Dispatch über data-action) ---------- */
 const ACTIONS = {
-  'tab': el => { markViewAnim(); tab = el.dataset.tab; trainSub = null; uebSub = null; verlaufSub = null; editDraft = null; tplDraft = null; planAuswahl = null; closeSheet(); render(); window.scrollTo(0, 0); },
+  'tab': el => { markViewAnim(); tab = el.dataset.tab; trainSub = null; uebSub = null; verlaufSub = null; editDraft = null; tplDraft = null; planAuswahl = null; satzAuswahl = null; closeSheet(); render(); window.scrollTo(0, 0); },
   'sheet-close': () => closeSheet(),
 
   /* Training / Pläne */
@@ -3103,6 +3209,7 @@ const ACTIONS = {
       '<button class="btn" data-action="set-warmup" data-ex="' + xi + '" data-set="' + si + '">' +
       (s.warmup ? 'Als Arbeitssatz markieren' : 'Als Aufwärmsatz markieren') + '</button>' +
       '<button class="btn btn-danger" data-action="set-entfernen" data-ex="' + xi + '" data-set="' + si + '">Satz entfernen</button>' +
+      (wex.sets.length > 1 ? '<button class="btn" data-action="satz-select-mode" data-ex="' + xi + '">Mehrere Sätze auswählen…</button>' : '') +
       '<button class="btn" data-action="sheet-close">Abbrechen</button></div>');
   },
   'set-warmup': el => {
@@ -3115,27 +3222,61 @@ const ACTIONS = {
     render();
   },
   'set-entfernen': el => {
-    const aw = S.activeWorkout;
-    if (!aw) return;
-    const xi = +el.dataset.ex, i = +el.dataset.set;
-    const wex = aw.exercises[xi];
-    wex.sets.splice(i, 1);
-    /* Pausen-Zeiger korrigieren */
-    if (aw.rest && aw.rest.exIdx === xi) {
-      if (aw.rest.setIdx === i) { aw.rest = null; pauseWachEnde(); }
-      else if (aw.rest.setIdx > i) aw.rest.setIdx--;
-    }
-    if (!wex.sets.length) {
-      aw.exercises.splice(xi, 1);
-      if (aw.rest) {
-        if (aw.rest.exIdx === xi) { aw.rest = null; pauseWachEnde(); }
-        else if (aw.rest.exIdx > xi) aw.rest.exIdx--;
-      }
-    }
+    if (!satzEntfernen(+el.dataset.ex, [+el.dataset.set])) { closeSheet(); return; }
+    satzAuswahl = null;
     save();
     closeSheet();
     render();
     showToast('Satz entfernt');
+  },
+
+  /* --- Sätze auswählen und in einem Rutsch entfernen (auch mittendrin) --- */
+  'satz-select-mode': el => {
+    const xi = +el.dataset.ex;
+    satzAuswahl = (satzAuswahl && satzAuswahl.xi === xi) ? null : { xi, sets: new Set() };
+    closeSheet();
+    render();
+  },
+  'satz-select': el => {
+    if (!satzAuswahl) return;
+    const si = +el.dataset.set;
+    if (satzAuswahl.sets.has(si)) satzAuswahl.sets.delete(si);
+    else satzAuswahl.sets.add(si);
+    render();
+  },
+  'satz-select-all': el => {
+    const wex = S.activeWorkout && S.activeWorkout.exercises[+el.dataset.ex];
+    if (!wex || !satzAuswahl) return;
+    if (satzAuswahl.sets.size === wex.sets.length) satzAuswahl.sets.clear();
+    else wex.sets.forEach((_, i) => satzAuswahl.sets.add(i));
+    render();
+  },
+  /* Offene Sätze verschwinden sofort — da geht nichts verloren. Sind abgehakte
+     Sätze dabei, wird vorher gefragt: dort stecken bereits erfasste Werte. */
+  'satz-select-del': el => {
+    const xi = +el.dataset.ex;
+    const wex = S.activeWorkout && S.activeWorkout.exercises[xi];
+    if (!wex || !satzAuswahl || !satzAuswahl.sets.size) { showToast('Nichts ausgewählt'); return; }
+    const idx = [...satzAuswahl.sets];
+    const fertig = idx.filter(i => wex.sets[i] && wex.sets[i].done === true).length;
+    if (fertig) {
+      openSheet('<div class="sheet-title">' + idx.length + ' ' + (idx.length === 1 ? 'Satz' : 'Sätze') + ' entfernen?</div>' +
+        '<div class="sheet-sub">' + fertig + ' davon ' + (fertig === 1 ? 'ist' : 'sind') + ' bereits abgehakt — ' +
+        (fertig === 1 ? 'dieser Wert geht' : 'diese Werte gehen') + ' verloren.</div>' +
+        '<div class="sheet-actions"><button class="btn btn-danger" data-action="satz-select-del-confirm" data-ex="' + xi + '">Entfernen</button>' +
+        '<button class="btn" data-action="sheet-close">Abbrechen</button></div>');
+      return;
+    }
+    ACTIONS['satz-select-del-confirm'](el);
+  },
+  'satz-select-del-confirm': el => {
+    if (!satzAuswahl) { closeSheet(); return; }
+    const n = satzEntfernen(+el.dataset.ex, [...satzAuswahl.sets]);
+    satzAuswahl = null;
+    save();
+    closeSheet();
+    render();
+    if (n) showToast(n + ' ' + (n === 1 ? 'Satz' : 'Sätze') + ' entfernt');
   },
   'step': el => {
     const aw = S.activeWorkout;
@@ -3188,25 +3329,16 @@ const ACTIONS = {
     save();
     render();
   },
+  /* Schnellweg: nimmt den letzten noch offenen Satz weg. Wer einen bestimmten
+     Satz mittendrin loswerden will, geht über „Auswählen…" bzw. die Satz-Zahl. */
   'set-del': el => {
     const aw = S.activeWorkout;
     const xi = +el.dataset.ex;
     const wex = aw.exercises[xi];
     for (let i = wex.sets.length - 1; i >= 0; i--) {
       if (wex.sets[i].done !== true) {
-        wex.sets.splice(i, 1);
-        /* Pausen-Zeiger mitschieben, damit restSec nicht im falschen Satz landet */
-        if (aw.rest && aw.rest.exIdx === xi) {
-          if (aw.rest.setIdx === i) aw.rest = null;
-          else if (aw.rest.setIdx > i) aw.rest.setIdx--;
-        }
-        if (!wex.sets.length) {
-          aw.exercises.splice(xi, 1);
-          if (aw.rest) {
-            if (aw.rest.exIdx === xi) aw.rest = null;
-            else if (aw.rest.exIdx > xi) aw.rest.exIdx--;
-          }
-        }
+        satzEntfernen(xi, [i]);
+        satzAuswahl = null;
         save();
         render();
         return;
@@ -3281,6 +3413,7 @@ const ACTIONS = {
         if (aw.rest && aw.rest.exIdx === xi) { aw.rest = null; pauseWachEnde(); }
         showToast('Ersetzt durch ' + exById(neuId).name);
       }
+      satzAuswahl = null;   // die Sätze darunter sind andere geworden
       save();
       render();
     });
@@ -3300,6 +3433,7 @@ const ACTIONS = {
       if (aw.rest.exIdx === xi) { aw.rest = null; pauseWachEnde(); }
       else if (aw.rest.exIdx > xi) aw.rest.exIdx--;
     }
+    satzAuswahl = null;   // die Indizes darunter sind verrutscht
     save();
     closeSheet();
     render();

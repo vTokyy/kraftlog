@@ -535,6 +535,9 @@ button.prog-chip:active { transform: scale(0.96); }
 .add-set-btn:active { background: var(--card-2); }
 .add-set-btn.muted { color: var(--text-2); }
 .add-set-btn.warm { color: var(--orange-ink); }
+.add-set-btn.danger { color: var(--red-ink); }
+.set-tools-sel { gap: var(--sp-1); }
+.sel-count { font-size: 14px; font-weight: 600; color: var(--text-2); letter-spacing: -0.1px; margin-right: auto; }
 
 /* ---------- Timer-Bar ---------- */
 #timer-bar {
@@ -611,12 +614,27 @@ button.prog-chip:active { transform: scale(0.96); }
 }
 #sheet.closing #sheet-backdrop { animation: fade-in var(--dur-3) var(--ease-out) reverse both; }
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+/* --kb / --vvh setzt app.js aus visualViewport. Ohne Tastatur ist --kb 0 und
+   --vvh die volle Höhe — dann gilt wie bisher die 86-vh-Deckelung. Mit Tastatur
+   rückt das Sheet über deren Kante und schrumpft auf den sichtbaren Rest, damit
+   die Trefferliste nicht darunter verschwindet. */
 #sheet-panel {
-  position: absolute; bottom: 0; left: 0; right: 0; max-width: 560px; margin: 0 auto;
+  position: absolute; bottom: var(--kb, 0px); left: 0; right: 0; max-width: 560px; margin: 0 auto;
   background: var(--bg); border-radius: var(--r-2xl) var(--r-2xl) 0 0; box-shadow: var(--shadow-lg);
   padding: var(--sp-3) var(--sp-4) calc(var(--sp-4) + env(safe-area-inset-bottom));
-  max-height: 86vh; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  max-height: min(86vh, calc(var(--vvh, 100vh) - var(--sp-4)));
+  overflow-y: auto; -webkit-overflow-scrolling: touch;
   animation: sheet-up var(--dur-4) var(--ease-drawer) both;
+}
+/* Über der Tastatur gibt es keinen Home-Indikator, den man freihalten müsste. */
+#sheet.kb-auf #sheet-panel { padding-bottom: var(--sp-4); }
+/* Suchfeld des Übungs-Pickers bleibt beim Scrollen der Treffer stehen.
+   Der negative Versatz zieht es bis an die Panel-Oberkante, sonst scrollen die
+   Treffer im Streifen der Panel-Innenabstände sichtbar dahinter durch. */
+.picker-such {
+  position: sticky; top: calc(var(--sp-3) * -1); z-index: 2;
+  background: var(--bg); padding: var(--sp-3) 0 var(--sp-2);
+  margin-top: calc(var(--sp-3) * -1);
 }
 /* Ausfahrt spiegelt die Einfahrt — dieselbe Kante, derselbe Weg. */
 #sheet.closing #sheet-panel { animation: sheet-up var(--dur-3) var(--ease-drawer) reverse both; }
@@ -858,6 +876,14 @@ circle.chart-dot { stroke: var(--card); stroke-width: 2; }
 }
 .sel-dot.on { background: var(--blue-solid); border-color: var(--blue-solid); }
 .li-selected { background: var(--blue-soft); }
+/* Auswahlmodus für Sätze: derselbe Punkt, aber mit der Satz-Zahl darin — man
+   wählt „Satz 2", nicht „die zweite Zeile". Die Trefferfläche liegt unsichtbar
+   über der ganzen Zeile, damit nicht der 26-pt-Punkt getroffen werden muss. */
+.sel-dot-num { font-variant-numeric: tabular-nums; }
+.sel-dot-num:not(.on) { color: var(--text-2); }
+.set-sel-on { background: var(--blue-soft); }
+.set-sel-on + .set-row::before, .set-sel-on::before { background: transparent; }
+.set-sel-hit { position: absolute; inset: 0; border-radius: inherit; background: transparent; }
 .linklike {
   color: var(--blue-ink); font-weight: 600; font-size: inherit; letter-spacing: -0.1px;
   display: inline-flex; align-items: center; min-height: var(--tap); padding: 0 6px; margin: 0 -6px;

@@ -170,8 +170,11 @@ Reihenfolge in der Tab-Bar: **Profil · Verlauf · Start (Mitte, hervorgehoben) 
   Pausen-Zeiger wird per Index-Korrektur bzw. Objekt-Identität gerettet), Übungen
   hinzufügen, Aufwärmsatz-Flag pro Satz, Notizen **pro Übung**, Aufwärm-Rechner.
 - **Aufwärm-Rechner** (`computeWarmup`): prozentuale Rampe aufs Arbeitsgewicht,
-  2,5-kg-Raster, bei Stangen-Übungen Start mit leerer Stange (20 kg / SZ 10 kg) × 12;
-  < 40 kg: 50 %×8, 75 %×5; sonst 50 %×8, 70 %×5, 85 %×3; ab 60 kg zusätzlich 92 %×1.
+  2,5-kg-Raster, feste Länge je Muskelgruppe (`WARMUP_GROSS` / `WARMUP_RAMPEN`):
+  große Gruppen (Beine, Gesäß, Brust, Rücken) 3 Sätze — 50 %×8, 70 %×4, 85 %×2;
+  alle übrigen (Schultern, Arme, Waden, Core) 2 Sätze — 50 %×8, 75 %×4.
+  Kein Satz unter der leeren Stange (20 kg / SZ 10 kg), keiner auf/über dem
+  Arbeitsgewicht — bei leichten Gewichten fallen Sätze deshalb von selbst weg.
   Verfügbar im Plan-Editor und im laufenden Training.
 - **Beenden:** Nur abgehakte Sätze werden gespeichert; liegt der letzte Satz > 30 min
   zurück, wird die Dauer auf dessen Zeitpunkt gedeckelt (liegengelassene Trainings).
