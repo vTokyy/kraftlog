@@ -48,7 +48,7 @@ Quellcode: `~/Desktop/Kraftlog-Quellcode/` (eigenes Git-Repo).
 | `icons.js` | 63 | SVG-Übungskacheln: Hintergrundfarbe = Muskelgruppe (10 Farben), Piktogramm = Equipment. |
 | `coach.js` | 159 | Evidenzbasiertes Offline-Regelwerk: Pausen, Rep-Bereiche, Laststeigerung, Deload, Wochenvolumen-Ziele. |
 | `charts.js` | 127 | Handgerollte SVG-Charts (`lineChart`, `barChart`), Farben nur über CSS-Variablen → Dark Mode automatisch. |
-| `timer.js` | 144 | Signal-Primitiven: WebAudio-Glocke, eingebettete WAV-Töne, Audio Session API, Vibration. |
+| `timer.js` | 174 | Signal-Primitiven: „Let's go"-Clip als Pausenende-Signal (MP3-Data-URI), WebAudio-Glocke als Rückfall, eingebettete WAV-Töne, Audio Session API, Vibration. |
 | `app.js` | 3336 | Die gesamte App-Engine (State, Rendering, Workout-Maschine, Import/Export, Strava, Push). |
 | `sw.js` | 68 | Service Worker: Precache (13 Dateien), cache-first, Push-Handler. |
 | `manifest.webmanifest` | 17 | PWA-Manifest (standalone, portrait, Icons inkl. maskable). |
@@ -165,10 +165,19 @@ Reihenfolge in der Tab-Bar: **Profil · Verlauf · Start (Mitte, hervorgehoben) 
   neue Pause (`rest`-Objekt mit Timestamps) und plant den Push-Weckruf.
 - **Pausenziel-Hierarchie:** Plan-Override → Übungs-Override → Coach-Kategorie
   (bzw. Klassik-Pauschale). Timer-Bar: Fortschrittsbalken, „+30 s", „Skip",
-  „Los!" (exakte Pausenmessung). Am Ziel: Glocke + Vibration + lokale Notification.
+  „Los!" (exakte Pausenmessung). Am Ziel: „Let's go"-Clip + Vibration + lokale
+  Notification (siehe Abschnitt 8).
 - **Editieren während des Trainings:** Sätze überall einfügen/löschen (der
   Pausen-Zeiger wird per Index-Korrektur bzw. Objekt-Identität gerettet), Übungen
   hinzufügen, Aufwärmsatz-Flag pro Satz, Notizen **pro Übung**, Aufwärm-Rechner.
+- **Reihenfolge ändern** (`woExVerschieben` / `reihenfolgeSheetHtml`): Welche Übung wann
+  drankommt, entscheidet oft erst das Gerät, das frei wird. Das Sheet „Reihenfolge
+  ändern…" (aus dem Trainings-⋯ und aus dem Übungs-⋯) sortiert die Übungen per ▲/▼;
+  abgehakte Sätze wandern mit ihrer Übung mit. Alles, was auf einen Übungs-Index zeigt
+  (laufende Pause, Satz-Auswahl), wird beim Tausch mitgezogen. Gespeichert wird die
+  neue Reihenfolge über den Plan-Abgleich am Trainingsende: `planUpdateDiff` vergleicht
+  die Reihenfolge mit, ein reines Umsortieren gilt deshalb als Struktur-Abweichung und
+  „Struktur und Werte übernehmen" schreibt sie in den Plan zurück.
 - **Aufwärm-Rechner** (`computeWarmup`): prozentuale Rampe aufs Arbeitsgewicht,
   2,5-kg-Raster, feste Länge je Muskelgruppe (`WARMUP_GROSS` / `WARMUP_RAMPEN`):
   große Gruppen (Beine, Gesäß, Brust, Rücken) 3 Sätze — 50 %×8, 70 %×4, 85 %×2;
@@ -189,10 +198,17 @@ Reihenfolge in der Tab-Bar: **Profil · Verlauf · Start (Mitte, hervorgehoben) 
 
 Drei sich ergänzende Wege, bewusst so gebaut, dass **laufende Musik nicht stoppt**:
 
-1. **In der App (Vordergrund):** WebAudio-Glocke (zwei Anschläge, 660 Hz + Obertöne
-   1320/1980 Hz, exponentieller Ausklang) + Vibration + lokale Notification. Über die
+1. **In der App (Vordergrund):** der **„Let's go"-Clip** (DaBaby, 3 s, mono, als
+   MP3-Data-URI in `timer.js` eingebettet — die App bleibt damit offline-tauglich und
+   die Single-File-Variante lädt nichts nach) + Vibration + lokale Notification. Er
+   läuft über ein Audio-Element und tönt deshalb auch im Hintergrund, solange die
+   Audio-Session gehalten wird. Darf er nicht spielen (Autoplay-Sperre), springt die
+   **WebAudio-Glocke** ein (zwei Anschläge, 660 Hz + Obertöne 1320/1980 Hz,
+   exponentieller Ausklang) — das Pausenende geht nie lautlos vorbei. Über die
    **Audio Session API** (Safari 17+) läuft die App im Modus `ambient` (mischt sich mit
    Musik) und wechselt nur fürs Signal kurz auf `transient`.
+   Beide Signal-Elemente werden in derselben Nutzer-Geste entsperrt (erster Satz-Haken
+   bzw. Start einer freien Pause) — iOS merkt sich die Freigabe pro Element.
 2. **Opt-in „Hintergrund-Signal":** stille WAV-Schleife im Modus `playback` hält die
    App bei gesperrtem Gerät wach — unterbricht dafür die Musik (iOS-Einschränkung),
    deshalb standardmäßig aus und ehrlich beschriftet.

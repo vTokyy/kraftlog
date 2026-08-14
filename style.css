@@ -917,6 +917,17 @@ circle.chart-dot { stroke: var(--card); stroke-width: 2; }
 .diff-zeile b { font-weight: 700; }
 .diff-punkt { width: 5px; height: 5px; border-radius: 50%; background: var(--text-2); flex-shrink: 0; transform: translateY(-3px); }
 
+/* Reihenfolge-Sheet im laufenden Training: Nummer, Übung, zwei Pfeile */
+.ord-liste { padding: var(--sp-2) var(--sp-4); }
+.ord-row { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2) 0; position: relative; }
+.ord-row + .ord-row::before { content: ''; position: absolute; left: 30px; right: 0; top: 0; height: 1px; background: var(--sep); }
+.ord-nr {
+  width: 22px; flex-shrink: 0; text-align: center; font-size: 13px; font-weight: 700;
+  color: var(--text-2); font-variant-numeric: tabular-nums;
+}
+.ord-row .step-btn { font-size: 13px; }
+.ord-row .step-btn:disabled { opacity: 0.3; }
+
 .diag-kopf { display: flex; align-items: baseline; gap: var(--sp-2); flex-wrap: wrap; padding-bottom: var(--sp-2); border-bottom: 1px solid var(--sep); }
 .diag-kopf .tag { margin: 0; }
 .diag-kopf-text { font-size: 13px; color: var(--text-2); line-height: 1.4; }

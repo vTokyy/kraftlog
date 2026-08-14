@@ -989,6 +989,52 @@ function setInfoLine(s) {
   return bits.length ? '<div class="pause-info">' + bits.join(' · ') + '</div>' : '';
 }
 
+/* --- Reihenfolge der Übungen im laufenden Training ---
+ * Welche Übung wann drankommt, steht beim Start selten fest: die Bank ist besetzt,
+ * das Rack wird frei. Verschoben wird deshalb mitten im Training. Was dabei
+ * herauskommt, ist Teil des Trainings — und landet über den Plan-Abgleich am Ende
+ * im Plan (planUpdateDiff vergleicht die Reihenfolge mit).
+ * Alles, was auf einen Übungs-Index zeigt (laufende Pause, Satz-Auswahl), zieht mit. */
+function woExVerschieben(xi, dir) {
+  const aw = S.activeWorkout;
+  if (!aw) return false;
+  const zi = xi + dir;
+  if (!aw.exercises[xi] || !aw.exercises[zi]) return false;
+  const tmp = aw.exercises[xi];
+  aw.exercises[xi] = aw.exercises[zi];
+  aw.exercises[zi] = tmp;
+  const tausch = i => (i === xi ? zi : (i === zi ? xi : i));
+  if (aw.rest && aw.rest.exIdx >= 0) aw.rest.exIdx = tausch(aw.rest.exIdx);
+  if (satzAuswahl) satzAuswahl.xi = tausch(satzAuswahl.xi);
+  save();
+  return true;
+}
+function reihenfolgeSheetHtml() {
+  const aw = S.activeWorkout;
+  let h = '<div class="sheet-title">Reihenfolge</div>' +
+    '<div class="sheet-sub">Sortiere die Übungen so, wie du heute wirklich trainierst. Abgehakte Sätze bleiben dabei erhalten; am Ende fragt Kraftlog, ob der Plan die neue Reihenfolge übernehmen soll.</div>';
+  if (!aw || !aw.exercises.length) {
+    return h + '<div class="card"><div class="li-sub li-sub-wrap">Noch keine Übung im Training.</div></div>';
+  }
+  const n = aw.exercises.length;
+  h += '<div class="card ord-liste">';
+  aw.exercises.forEach((wex, xi) => {
+    const name = exById(wex.exId).name;
+    const fertig = wex.sets.filter(s => s.done === true).length;
+    h += '<div class="ord-row">' +
+      '<span class="ord-nr" aria-hidden="true">' + (xi + 1) + '</span>' +
+      '<div class="li-main"><div class="li-title li-title-sm">' + esc(name) + '</div>' +
+      '<div class="li-sub">' + wex.sets.length + ' ' + (wex.sets.length === 1 ? 'Satz' : 'Sätze') +
+      (fertig ? ' · ' + fertig + ' abgehakt' : '') + '</div></div>' +
+      '<button class="step-btn" data-action="wo-ex-move" data-ex="' + xi + '" data-dir="-1"' +
+      (xi === 0 ? ' disabled' : '') + ' aria-label="' + esc(name) + ' nach oben">▲</button>' +
+      '<button class="step-btn" data-action="wo-ex-move" data-ex="' + xi + '" data-dir="1"' +
+      (xi === n - 1 ? ' disabled' : '') + ' aria-label="' + esc(name) + ' nach unten">▼</button>' +
+      '</div>';
+  });
+  return h + '</div><div class="sheet-actions"><button class="btn btn-primary" data-action="sheet-close">Fertig</button></div>';
+}
+
 /* Template-Übung in einheitliche Form bringen: sets = Liste von { reps } (exaktes Ziel je Satz).
    Migriert die alte Form { sets:N, repMin, repMax } idempotent. */
 function normalizeTplExercise(it) {
@@ -1310,6 +1356,14 @@ function planAbweichungen(tpl, w, diff) {
       punkte.push('<b>' + esc(exById(id).name) + '</b> heute nicht trainiert');
     }
   });
+  /* Reihenfolge: nur die Übungen vergleichen, die auf beiden Seiten vorkommen —
+     sonst meldet jedes Weglassen und jede Zusatzübung zusätzlich „umsortiert". */
+  const gemeinsamTpl = tplIds.filter(id => woIds.indexOf(id) >= 0);
+  const gemeinsamWo = woIds.filter(id => tplIds.indexOf(id) >= 0);
+  if (gemeinsamTpl.length > 1 && gemeinsamTpl.join('|') !== gemeinsamWo.join('|')) {
+    punkte.push('Reihenfolge geändert — heute: ' +
+      gemeinsamWo.map(id => '<b>' + esc(exById(id).name) + '</b>').join(' → '));
+  }
   /* Satzanzahl je Übung, die im Plan und im Training vorkommt */
   tpl.exercises.forEach(it => {
     const wex = w.exercises.find(e => e.exId === it.exId);
@@ -1512,8 +1566,9 @@ function renderTimerBar() {
     aw.rest.signaled = true;
     save();
     if (S.settings.sound) {
-      Signal.beep();       // Vordergrund (WebAudio)
-      Signal.beepLaut();   // Hintergrund/gesperrt (Audio-Element)
+      /* "Let's go" als Pausenende-Signal; darf der Clip nicht spielen, springt
+         die Glocke ein (Vordergrund per WebAudio, Hintergrund per Audio-Element). */
+      Signal.hype(() => { Signal.beep(); Signal.beepLaut(); });
     }
     if (S.settings.vibration) Signal.vibrate();
     notifyPause();
@@ -3133,6 +3188,7 @@ const ACTIONS = {
     if (!aw) return;
     openSheet('<div class="sheet-title">' + esc(aw.name) + '</div><div class="sheet-actions">' +
       '<button class="btn" data-action="wo-add-ex">+ Übung hinzufügen</button>' +
+      (aw.exercises.length > 1 ? '<button class="btn" data-action="wo-ex-order">Reihenfolge ändern…</button>' : '') +
       '<button class="btn btn-danger" data-action="wo-discard">Training verwerfen</button></div>');
   },
   'wo-add-ex': () => {
@@ -3378,6 +3434,7 @@ const ACTIONS = {
       '<button class="btn btn-primary" data-action="wo-ex-replace" data-ex="' + xi + '">Übung ersetzen…</button>' +
       '<button class="btn" data-action="wo-ex-notiz" data-ex="' + xi + '">Notiz</button>' +
       '<button class="btn" data-action="wo-warmup" data-ex="' + xi + '">Aufwärmen berechnen</button>' +
+      (aw.exercises.length > 1 ? '<button class="btn" data-action="wo-ex-order">Reihenfolge ändern…</button>' : '') +
       '<button class="btn btn-danger" data-action="wo-ex-remove" data-ex="' + xi + '">Übung entfernen</button>' +
       '</div>');
   },
@@ -3438,6 +3495,17 @@ const ACTIONS = {
     closeSheet();
     render();
     showToast('Übung entfernt');
+  },
+  'wo-ex-order': () => {
+    if (!S.activeWorkout) return;
+    openSheet(reihenfolgeSheetHtml());
+  },
+  /* Nach jedem Schritt neu aufbauen: das Sheet zeigt sonst die alte Ordnung und
+     die Indizes in den data-ex-Attributen zeigen ins Leere. */
+  'wo-ex-move': el => {
+    if (!woExVerschieben(+el.dataset.ex, +el.dataset.dir)) return;
+    openSheet(reihenfolgeSheetHtml());
+    render();
   },
   'wo-warmup': el => {
     const aw = S.activeWorkout;
