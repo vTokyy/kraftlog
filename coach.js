@@ -3,10 +3,14 @@
  * differenziert nach Übungstyp und Muskelgruppe (statt Pauschalwerten).
  *
  * Wissenschaftliche Grundlage (als Regeln kodiert, App bleibt offline):
- * - Satzpausen: Längere Pausen (≥ 2–3 min) verbessern Kraft- und Hypertrophie-Ergebnisse
- *   bei Mehrgelenksübungen; kleine Muskelgruppen erholen sich schneller (60–90 s ausreichend).
- *   → Schoenfeld et al. 2016 (J Strength Cond Res), Grgic et al. 2017 (Review),
- *     de Salles & Simão 2009 (Sports Med).
+ * - Satzpausen: Längere Pausen (≥ 2–3 min) verbessern Kraft- und Hypertrophie-Ergebnisse.
+ *   → Schoenfeld et al. 2016 (J Strength Cond Res), Grgic et al. 2017 (Review).
+ *   Die konkreten Werte hängen an der MUSKELGRUPPE, nicht an der Übungskategorie:
+ *   entscheidend ist, wie viel Masse und Systemermüdung im Spiel ist, nicht ob die
+ *   Übung ein- oder mehrgelenkig ist. Ein Beinstrecker braucht mehr Luft als ein
+ *   Curl, obwohl beides Isolation ist. Untergrenze: 2:30 — die frühere
+ *   90-s-Empfehlung für kleine Muskeln (de Salles & Simão 2009) ließ in der Praxis
+ *   zu wenig Leistung für den nächsten Satz übrig.
  * - Laststeigerung: 2–10 % Steigerung, sobald das Wiederholungsziel übertroffen wird;
  *   prozentual bedeutet das: große Unterkörper-Verbundübungen vertragen größere Sprünge
  *   als kleine Isolationsübungen. → ACSM Position Stand 2009.
@@ -27,39 +31,57 @@ window.KraftlogCoach = (function () {
     return gross ? 'iso-gross' : 'iso-klein';
   }
 
+  /* Satzpause je Muskelgruppe. Untergrenze PAUSE_MIN — darunter geht nichts. */
+  const PAUSE_MIN = 150;
+  const PAUSEN = {
+    'Beine':      { sec: 210, grund: 'Oberschenkel: größte Muskelmasse und die höchste systemische Ermüdung im ganzen Plan. 3:30, damit der nächste Satz am Muskel scheitert und nicht an der Kondition.' },
+    'Gesäß':      { sec: 210, grund: 'Hüftdominante Arbeit (Hip Thrust, RDL, Ausfallschritte) ermüdet wie schweres Oberschenkeltraining — deshalb dieselbe Pause von 3:30.' },
+    'Brust':      { sec: 180, grund: '3 min: genug Erholung für schweres Drücken, ohne das Training unnötig zu strecken. Längere Pausen (≥ 2–3 min) schlagen kurze bei Kraft und Hypertrophie deutlich (Schoenfeld et al. 2016).' },
+    'Rücken':     { sec: 180, grund: '3 min: Ziehen und Rudern gehen über große Muskelmasse und oft über den Griff mit — beides braucht Erholung (Schoenfeld et al. 2016).' },
+    'Bauch/Core': { sec: 180, grund: '3 min. Core-Arbeit steht meist am Ende der Einheit, wenn ohnehin schon Ermüdung im System ist.' },
+    'Schultern':  { sec: 150, grund: '2:30. Die Schulter erholt sich zwar schneller als Brust oder Rücken, ist aber bei Druck- und Seitarbeit früh am Limit — kürzer bringt keinen sauberen Satz mehr.' },
+    'Bizeps':     { sec: 150, grund: '2:30 als Untergrenze. Auch ein kleiner Muskel liefert nach 90 s noch nicht die volle Leistung — die Wiederholungen brechen dann einfach weg.' },
+    'Trizeps':    { sec: 150, grund: '2:30 als Untergrenze. Auch ein kleiner Muskel liefert nach 90 s noch nicht die volle Leistung — die Wiederholungen brechen dann einfach weg.' },
+    'Waden':      { sec: 150, grund: '2:30. Waden vertragen viel Volumen, brauchen aber zwischen den Sätzen trotzdem echte Erholung — nicht mit dem Oberschenkel verwechseln, der bekommt 3:30.' },
+    'Unterarme':  { sec: 150, grund: '2:30. Griff- und Unterarmarbeit ermüdet schneller, als es sich anfühlt, und schlägt sonst auf die nächste Zugübung durch.' }
+  };
+
   const KATEGORIEN = {
     'uk-verbund': {
       label: 'Unterkörper-Grundübung',
-      pause: 210, repMin: 6, repMax: 10,
+      repMin: 6, repMax: 10,
       incPct: 0.05, incMin: 2.5, incMax: 10,
-      pauseGrund: 'Große Muskelmasse und hohe Herz-Kreislauf-Belastung: 3–5 min Pause, damit Kraftleistung und Satzqualität erhalten bleiben.',
       incGrund: 'Große Verbundübungen vertragen ca. 5-%-Sprünge — absolute Schritte wachsen mit dem Arbeitsgewicht.'
     },
     'ok-verbund': {
       label: 'Oberkörper-Grundübung',
-      pause: 180, repMin: 6, repMax: 10,
+      repMin: 6, repMax: 10,
       incPct: 0.025, incMin: 2.5, incMax: 5,
-      pauseGrund: 'Mehrgelenksübung: ≥ 2–3 min Pause führt zu mehr Volumen und besseren Zuwächsen als kurze Pausen.',
       incGrund: 'Oberkörper-Verbundübungen: ca. 2,5-%-Schritte (meist 2,5 kg) — kleinere Muskelmasse als Beine, kleinere Sprünge.'
     },
     'iso-gross': {
       label: 'Isolationsübung (große Muskelgruppe)',
-      pause: 120, repMin: 8, repMax: 12,
+      repMin: 8, repMax: 12,
       incPct: 0.025, incMin: 2.5, incMax: 5,
-      pauseGrund: 'Eingelenkig, aber große Muskelgruppe: ca. 2 min Pause als guter Kompromiss aus Erholung und Trainingsdichte.',
       incGrund: 'Isolationsübungen: kleine Schritte (2,5–5 kg), sonst bricht die Technik ein.'
     },
     'iso-klein': {
       label: 'Isolationsübung (kleine Muskelgruppe)',
-      pause: 90, repMin: 10, repMax: 15,
+      repMin: 10, repMax: 15,
       incPct: 0.02, incMin: 2.5, incMax: 2.5,
-      pauseGrund: 'Kleine Muskelgruppe erholt sich schnell: 60–90 s Pause reichen, mehr bringt hier keinen Zusatznutzen.',
       incGrund: 'Kleine Muskeln (z. B. Bizeps, Seitschulter): immer kleinstmöglicher Schritt (2,5 kg) und primär über Wiederholungen steigern.'
     }
   };
 
   function info(ex) { return KATEGORIEN[kategorie(ex)]; }
-  function pauseFuer(ex) { return info(ex).pause; }
+  /* Unbekannte Muskelgruppe (eigene Übung mit fremdem mg): auf die Untergrenze fallen,
+     nie darunter. */
+  function pauseInfo(ex) {
+    const p = PAUSEN[ex && ex.mg];
+    if (!p) return { sec: PAUSE_MIN, grund: 'Standardpause 2:30 — für diese Muskelgruppe ist kein eigener Wert hinterlegt.' };
+    return { sec: Math.max(PAUSE_MIN, p.sec), grund: p.grund };
+  }
+  function pauseFuer(ex) { return pauseInfo(ex).sec; }
   function repBereich(ex) { const k = info(ex); return [k.repMin, k.repMax]; }
 
   /* Steigerungsschritt in kg: prozentual, auf 2,5-kg-Raster gerundet, mit Kategorie-Grenzen */
@@ -187,7 +209,7 @@ window.KraftlogCoach = (function () {
     return String(Math.round(x * 100) / 100).replace('.', ',');
   }
 
-  const QUELLEN = 'Regelwerk nach: Schoenfeld et al. 2016 & Grgic et al. 2017 (Satzpausen), ACSM Position Stand 2009 (Laststeigerung 2–10 %), Helms/Zourdos et al. 2016 (RPE/RIR-Autoregulation), Prinzip der doppelten Progression.';
+  const QUELLEN = 'Regelwerk nach: Schoenfeld et al. 2016 & Grgic et al. 2017 (Satzpausen — längere schlagen kürzere), ACSM Position Stand 2009 (Laststeigerung 2–10 %), Helms/Zourdos et al. 2016 (RPE/RIR-Autoregulation), Prinzip der doppelten Progression.';
 
   /* Produktives Wochenvolumen (direkte Arbeitssätze/Woche, Hypertrophie).
    * min 0 = optionale Gruppe (keine Zu-wenig-Warnung), nur Obergrenze wird geprüft. */
@@ -204,5 +226,5 @@ window.KraftlogCoach = (function () {
     'Unterarme':  { min: 0,  max: 12, hinweis: 'Optional — bekommen viel indirekt aus Zug- und Halteübungen.' }
   };
 
-  return { kategorie, info, pauseFuer, repBereich, inkrement, empfehlung, QUELLEN, VOLUMEN };
+  return { kategorie, info, pauseFuer, pauseInfo, PAUSEN, PAUSE_MIN, repBereich, inkrement, empfehlung, QUELLEN, VOLUMEN };
 })();

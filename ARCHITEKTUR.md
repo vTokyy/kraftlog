@@ -163,10 +163,15 @@ Reihenfolge in der Tab-Bar: **Profil · Verlauf · Start (Mitte, hervorgehoben) 
   iOS-Audio (Nutzer-Geste), finalisiert die **laufende Pause als gemessene `restSec`
   des Vorsatzes**, prüft PRs gegen die gesamte Historie (Toast + Konfetti), startet die
   neue Pause (`rest`-Objekt mit Timestamps) und plant den Push-Weckruf.
-- **Pausenziel-Hierarchie:** Plan-Override → Übungs-Override → Coach-Kategorie
-  (bzw. Klassik-Pauschale). Timer-Bar: Fortschrittsbalken, „+30 s", „Skip",
-  „Los!" (exakte Pausenmessung). Am Ziel: Gong + Vibration + lokale
+- **Pausenziel-Hierarchie:** Plan-Override → Übungs-Override → Coach-Wert der
+  **Muskelgruppe** (bzw. Klassik-Pauschale). Timer-Bar: Fortschrittsbalken, „+30 s",
+  „Skip", „Los!" (exakte Pausenmessung). Am Ziel: Gong + Vibration + lokale
   Notification (siehe Abschnitt 8).
+- **Aufwärmsätze starten keine Pause.** Zwischen den Rampensätzen pausiert man kurz
+  nach Gefühl; ein Timer mit vollem Pausenziel hätte hier den Gong ein halbes Dutzend
+  Mal pro Übung ausgelöst. `checkSet` überspringt bei `s.warmup` das Anlegen von
+  `aw.rest` und beendet eine laufende Pause samt Push-Weckruf. Wer doch eine will:
+  „Pause starten" in der Timer-Leiste.
 - **Editieren während des Trainings:** Sätze überall einfügen/löschen (der
   Pausen-Zeiger wird per Index-Korrektur bzw. Objekt-Identität gerettet), Übungen
   hinzufügen, Aufwärmsatz-Flag pro Satz, Notizen **pro Übung**, Aufwärm-Rechner.
@@ -221,15 +226,35 @@ Drei sich ergänzende Wege, bewusst so gebaut, dass **laufende Musik nicht stopp
 
 ## 9. Der Coach (coach.js) — evidenzbasiertes Regelwerk
 
-Vollständig offline und deterministisch. Übungen werden in **4 Kategorien** eingeteilt
-(Verbund/Isolation × Unterkörper/Oberkörper bzw. große/kleine Muskelgruppe):
+Vollständig offline und deterministisch. **Zwei getrennte Achsen** — das ist der
+wichtigste Punkt an diesem Modul:
 
-| Kategorie | Pause | Reps | Steigerung | Deckel |
-|---|---|---|---|---|
-| Unterkörper-Grundübung | 210 s | 6–10 | 5 % | 2,5–10 kg |
-| Oberkörper-Grundübung | 180 s | 6–10 | 2,5 % | 2,5–5 kg |
-| Isolation, große Muskelgruppe | 120 s | 8–12 | 2,5 % | 2,5–5 kg |
-| Isolation, kleine Muskelgruppe | 90 s | 10–15 | 2 % | fix 2,5 kg |
+**1. Satzpause hängt an der Muskelgruppe** (`PAUSEN`), nicht an der Übungskategorie.
+Entscheidend ist, wie viel Masse und Systemermüdung im Spiel ist, nicht ob die Übung
+ein- oder mehrgelenkig ist: ein Beinstrecker braucht mehr Luft als ein Curl, obwohl
+beides Isolation ist. Verbund und Isolation derselben Gruppe bekommen deshalb
+denselben Wert.
+
+| Pause | Muskelgruppen |
+|---|---|
+| **3:30** (210 s) | Beine, Gesäß |
+| **3:00** (180 s) | Brust, Rücken, Bauch/Core |
+| **2:30** (150 s) | Schultern, Bizeps, Trizeps, Waden, Unterarme |
+
+`PAUSE_MIN = 150` ist eine harte Untergrenze — auch eine unbekannte Muskelgruppe
+(eigene Übung mit fremdem `mg`) fällt auf 2:30, nie darunter. Die frühere Staffelung
+lief über die Kategorie und endete bei 90 s für kleine Muskeln; das ließ in der Praxis
+zu wenig Leistung für den nächsten Satz übrig.
+
+**2. Wiederholungen und Steigerung hängen an der Kategorie** (`KATEGORIEN`,
+Verbund/Isolation × Unterkörper/Oberkörper bzw. große/kleine Muskelgruppe):
+
+| Kategorie | Reps | Steigerung | Deckel |
+|---|---|---|---|
+| Unterkörper-Grundübung | 6–10 | 5 % | 2,5–10 kg |
+| Oberkörper-Grundübung | 6–10 | 2,5 % | 2,5–5 kg |
+| Isolation, große Muskelgruppe | 8–12 | 2,5 % | 2,5–5 kg |
+| Isolation, kleine Muskelgruppe | 10–15 | 2 % | fix 2,5 kg |
 
 `empfehlung()` entscheidet in dieser Reihenfolge: **RPE-Gating** (alle Sätze am
 Maximum, aber RPE > 9 → halten, erst Reserve aufbauen) → **Laststeigerung** (alle Sätze

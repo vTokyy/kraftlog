@@ -59,7 +59,7 @@ function defaults() {
       hintergrundSignal: false,
       coach: true,
       goku: true,
-      restCompound: 180, restIsolation: 90,
+      restCompound: 180, restIsolation: 150,   // Klassik-Modus; 2:30 ist auch hier die Untergrenze
       incUpper: 2.5, incLower: 5, lastExport: null,
       groesseCm: null,
       letztePauseFrei: 150,  // zuletzt gewählte freie Pausendauer (Schnellwahl im Training)
@@ -384,7 +384,7 @@ function progressionFor(exId, repMin, repMax) {
   if (!sess.length) {
     return {
       typ: 'neu', text: 'Erstes Mal — Arbeitsgewicht für ' + repRangeText(repMin, repMax) + ' finden',
-      grund: coachAn ? ('Kategorie: ' + k.label + '. Empfohlener Zielbereich: ' + k.repMin + '–' + k.repMax + ' Wdh., Satzpause ~' + fmtMinSek(k.pause) + ' min. Wähle ein Gewicht, mit dem du das untere Ziel technisch sauber schaffst — gesteigert wird ab der nächsten Einheit automatisch.') : null
+      grund: coachAn ? ('Kategorie: ' + k.label + '. Empfohlener Zielbereich: ' + k.repMin + '–' + k.repMax + ' Wdh., Satzpause ~' + fmtMinSek(Coach.pauseFuer(ex)) + ' min. Wähle ein Gewicht, mit dem du das untere Ziel technisch sauber schaffst — gesteigert wird ab der nächsten Einheit automatisch.') : null
     };
   }
   const ws = workingSets(sess[sess.length - 1].wex);
@@ -1191,10 +1191,17 @@ function checkSet(xi, si) {
     /* Erst die Meldung lesbar, dann die Feier — nicht beides auf einmal */
     setTimeout(burstConfetti, 120);
   }
-  /* Pause starten */
-  aw.rest = { startedAt: now, targetSec: restTarget(wex.exId, wex.restSec), exIdx: xi, setIdx: si, signaled: false, manuell: false };
-  pauseWach();   // Wake Lock (Standard) bzw. stille Schleife (Opt-in "Signal bei gesperrtem Handy")
-  pushPlanen(aw.rest.targetSec);   // Weckruf über den Worker (falls Pausen-Push aktiv)
+  /* Pause starten — außer nach einem Aufwärmsatz. Zwischen den Rampensätzen pausiert
+     man kurz nach Gefühl; ein Timer mit vollem Pausenziel würde hier nur den Gong
+     ein halbes Dutzend Mal pro Übung auslösen. Wer doch eine will: „Pause starten"
+     in der Timer-Leiste. */
+  if (s.warmup) {
+    if (aw.rest) { aw.rest = null; pauseWachEnde(); }   // laufende Pause samt Weckruf beenden
+  } else {
+    aw.rest = { startedAt: now, targetSec: restTarget(wex.exId, wex.restSec), exIdx: xi, setIdx: si, signaled: false, manuell: false };
+    pauseWach();   // Wake Lock (Standard) bzw. stille Schleife (Opt-in "Signal bei gesperrtem Handy")
+    pushPlanen(aw.rest.targetSec);   // Weckruf über den Worker (falls Pausen-Push aktiv)
+  }
   save();
   render();
 }
@@ -1999,7 +2006,8 @@ function renderUebungDetail() {
   /* Übungs-Einstellungen */
   h += '<div class="section-title">Einstellungen</div>' +
     '<div class="setting-row"><div class="li-main"><div class="li-title li-title-sm">Pausenziel</div>' +
-    '<div class="li-sub">leer = Standard (' + pauseStandard(ex.id) + ' s' + (S.settings.coach !== false ? ' · Coach: ' + esc(Coach.info(ex).label) : '') + ')</div></div>' +
+    '<div class="li-sub">leer = Standard (' + fmtMinSek(pauseStandard(ex.id)) + ' min' +
+    (S.settings.coach !== false ? ' · Coach-Wert für ' + esc(ex.mg) : '') + ')</div></div>' +
     '<input class="input-mini" inputmode="numeric" placeholder="auto" value="' + (os.restSec || '') + '" data-exset="restSec" data-id="' + esc(ex.id) + '"><span class="li-sub">s</span></div>' +
     '<div class="form-row"><label>Notiz (z. B. Sitzeinstellung, Griffbreite)</label>' +
     '<textarea class="input" data-exset="notiz" data-id="' + esc(ex.id) + '">' + esc(os.notiz || '') + '</textarea></div>';
@@ -3399,7 +3407,7 @@ const ACTIONS = {
       '<div class="info-box">Satzpause: <b>' + fmtMinSek(restTarget(wex.exId, wex.restSec)) + ' min</b><br>' +
       ((wex.restSec || (S.exerciseSettings[wex.exId] && S.exerciseSettings[wex.exId].restSec))
         ? 'Von dir festgelegt (Plan- bzw. Übungs-Einstellung).'
-        : (S.settings.coach !== false ? esc(k.pauseGrund) : 'Pauschalwert aus den Einstellungen (Klassik-Modus).')) + '</div>' +
+        : (S.settings.coach !== false ? esc(Coach.pauseInfo(ex).grund) : 'Pauschalwert aus den Einstellungen (Klassik-Modus).')) + '</div>' +
       '<div class="mini-note">' + esc(Coach.QUELLEN) + '</div>' +
       '<div class="sheet-actions"><button class="btn btn-primary" data-action="sheet-close">Alles klar</button></div>');
   },
