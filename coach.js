@@ -72,22 +72,37 @@ window.KraftlogCoach = (function () {
 
   /* Kern-Empfehlung nach doppelter Progression + RPE-Autoregulation.
    * ws / wsDavor: Arbeitssätze der letzten bzw. vorletzten Einheit ({kg, reps, rpe}).
-   * Rückgabe: { typ, kg, reps, text, grund } — text = Chip, grund = "Warum?"-Erklärung. */
+   * Rückgabe: { typ, kg, reps, text, grund, hinweis }
+   *   text    = Chip im Training — trägt immer Gewicht UND Wiederholungsziel,
+   *             sonst bleibt offen, was man mit der Zahl anfangen soll.
+   *   grund   = "Warum?" — die Begründung hinter der Regel.
+   *   hinweis = "So setzt du das um" — Paare [Was, Wie]. Gerade der Deload ist ohne
+   *             Wiederholungs- und Anstrengungsvorgabe wertlos: −10 % bis ans Versagen
+   *             geprügelt ist kein Deload, sondern nur ein leichterer harter Tag. */
   function empfehlung(ex, ws, wsDavor, repMin, repMax) {
     const k = info(ex);
     repMin = repMin || k.repMin;
     repMax = repMax || k.repMax;
+    const saetze = ws.length;
     const topKg = Math.max(...ws.map(s => s.kg || 0));
     const rpes = ws.map(s => s.rpe).filter(x => x != null);
     const maxRpe = rpes.length ? Math.max(...rpes) : null;
     const alleOben = ws.every(s => s.reps >= repMax);
     const unterMin = ws.some(s => s.reps < repMin);
+    const satzWort = saetze === 1 ? '1 Satz' : saetze + ' Sätze';
 
     if (alleOben && maxRpe != null && maxRpe > 9) {
+      const inc = inkrement(ex, topKg);
       return {
-        typ: 'halten', kg: topKg,
-        text: fmtKgLokal(topKg) + ' kg halten (RPE ' + fmtKgLokal(maxRpe) + ')',
-        grund: 'Du hast zwar das Wiederholungsziel erreicht, warst aber sehr nah am Muskelversagen (RPE > 9). Autoregulation: erst bei gleicher Last Reserve aufbauen (RPE ≤ 9), dann steigern — das hält die Technik stabil und die Ermüdung steuerbar (Helms et al. 2016).'
+        typ: 'halten', kg: topKg, reps: repMax,
+        text: fmtKgLokal(topKg) + ' kg × ' + repMax + ' Wdh. halten (RPE ' + fmtKgLokal(maxRpe) + ')',
+        grund: 'Du hast das Wiederholungsziel erreicht, warst dabei aber sehr nah am Muskelversagen (RPE ' + fmtKgLokal(maxRpe) + ', also über 9). Mehr Gewicht würde die Technik jetzt zuerst kosten, nicht die Kraft aufbauen. Autoregulation heißt hier: dieselbe Leistung noch einmal, aber mit Reserve — erst wenn die Wiederholungen bei RPE ≤ 9 stehen, ist der nächste Sprung tragfähig (Helms et al. 2016).',
+        hinweis: [
+          ['Gewicht', fmtKgLokal(topKg) + ' kg — unverändert.'],
+          ['Wiederholungen', repMax + ' pro Satz. Genau das hast du letztes Mal schon geschafft.'],
+          ['Anstrengung', 'Diesmal mit 1–2 Wiederholungen in Reserve (RPE ≤ 9) statt am Anschlag.'],
+          ['Danach', 'Stehen die ' + repMax + ' Wdh. mit Reserve, kommt der Sprung auf ' + fmtKgLokal(topKg + inc) + ' kg.']
+        ]
       };
     }
     if (alleOben) {
@@ -96,7 +111,13 @@ window.KraftlogCoach = (function () {
       return {
         typ: 'plus', kg: topKg + inc, reps: repMin,
         text: '+' + fmtKgLokal(inc) + ' kg → ' + fmtKgLokal(topKg + inc) + ' kg × ' + repMin + ' Wdh.',
-        grund: 'Alle Arbeitssätze haben das obere Wiederholungsziel (' + repMax + ') erreicht' + (maxRpe != null ? ' bei RPE ≤ 9' : '') + ' — Zeit für mehr Gewicht. Schritt: +' + fmtKgLokal(inc) + ' kg' + (pctReal != null ? ' (~' + fmtKgLokal(pctReal) + ' %)' : '') + '. Richtwert (Kategorie „' + k.label + '"): ~' + fmtKgLokal(k.incPct * 100) + ' % je Steigerung (ACSM: 2–10 %), in der Praxis begrenzt durch den kleinsten Hantel-Schritt von 2,5 kg. Die Wiederholungen starten wieder am unteren Ende (' + repMin + ') — doppelte Progression.'
+        grund: 'Alle Arbeitssätze haben das obere Wiederholungsziel (' + repMax + ') erreicht' + (maxRpe != null ? ' bei RPE ≤ 9' : '') + ' — Zeit für mehr Gewicht. Schritt: +' + fmtKgLokal(inc) + ' kg' + (pctReal != null ? ' (~' + fmtKgLokal(pctReal) + ' %)' : '') + '. Richtwert (Kategorie „' + k.label + '"): ~' + fmtKgLokal(k.incPct * 100) + ' % je Steigerung (ACSM: 2–10 %), in der Praxis begrenzt durch den kleinsten Hantel-Schritt von 2,5 kg.',
+        hinweis: [
+          ['Gewicht', '+' + fmtKgLokal(inc) + ' kg → ' + fmtKgLokal(topKg + inc) + ' kg.'],
+          ['Wiederholungen', repMin + ' pro Satz — zurück ans untere Ende. Das ist Absicht, nicht Rückschritt: schwereres Gewicht, weniger Wiederholungen.'],
+          ['Anstrengung', '1–3 Wiederholungen in Reserve (RPE 7–9). Der erste Satz am neuen Gewicht muss nicht wehtun.'],
+          ['Danach', 'Von ' + repMin + ' Wdh. wieder hocharbeiten, bis alle Sätze ' + repMax + ' schaffen — dann der nächste Sprung. Das ist die doppelte Progression.']
+        ]
       };
     }
     if (unterMin) {
@@ -105,30 +126,58 @@ window.KraftlogCoach = (function () {
         /* mindestens einen echten 2,5-kg-Schritt runter — sonst wäre der Deload wirkungslos */
         const ziel = Math.max(0, Math.min(topKg - 2.5, Math.round(topKg * 0.9 / 2.5) * 2.5));
         if (topKg > 2.5) {
+          const minusPct = Math.round((1 - ziel / topKg) * 100);
           return {
-            typ: 'halten', kg: ziel,
-            text: 'Deload: ' + fmtKgLokal(ziel) + ' kg (−' + fmtKgLokal(Math.round((1 - ziel / topKg) * 100)) + ' %)',
-            grund: 'Zweite Einheit in Folge unter dem Mindestziel (' + repMin + ' Wdh.) — das deutet auf angesammelte Ermüdung hin. Ein kurzer Rücksetzer auf ' + fmtKgLokal(ziel) + ' kg schafft Erholung und neuen Anlauf; danach geht es meist über den alten Stand hinaus.'
+            typ: 'deload', kg: ziel, reps: repMax,
+            text: 'Deload: ' + fmtKgLokal(ziel) + ' kg × ' + repMax + ' Wdh. (−' + fmtKgLokal(minusPct) + ' %)',
+            grund: 'Zweite Einheit in Folge unter dem Mindestziel (' + repMin + ' Wdh.). Das ist typischerweise angesammelte Ermüdung, nicht fehlende Kraft — wer jetzt am selben Gewicht weiterbeißt, verfestigt vor allem schlechte Satzqualität. Ein Deload nimmt für eine Einheit die Last raus, damit du wieder sauber in den Zielbereich kommst; danach geht es meist über den alten Stand hinaus (Ermüdungsmanagement, Helms et al. 2016).',
+            hinweis: [
+              ['Gewicht', fmtKgLokal(ziel) + ' kg statt ' + fmtKgLokal(topKg) + ' kg (−' + fmtKgLokal(minusPct) + ' %).'],
+              ['Wiederholungen', repMax + ' pro Satz — das obere Ende deines Bereichs. Mit dem leichteren Gewicht muss das gehen; schaffst du sie nicht, war die Ermüdung größer als gedacht.'],
+              ['Sätze', 'Unverändert ' + satzWort + '. Das Volumen bleibt, nur die Intensität sinkt.'],
+              ['Anstrengung', '2–3 Wiederholungen in Reserve (RPE 7–8). Ein Deload, den du bis ans Versagen prügelst, ist keiner.'],
+              ['Danach', 'Nächste Einheit wieder ' + fmtKgLokal(topKg) + ' kg anpeilen — meist läuft sie dann durch.']
+            ]
           };
         }
         return {
-          typ: 'halten', kg: topKg,
+          typ: 'deload', kg: topKg, reps: repMin,
           text: 'Erholung einplanen — Ziel zweimal verfehlt',
-          grund: 'Zweite Einheit in Folge unter dem Mindestziel (' + repMin + ' Wdh.). Ein Gewichts-Deload ist hier kaum möglich (Last bereits minimal) — plane einen leichteren Tag oder mehr Erholung ein und senke ggf. vorübergehend das Wiederholungsziel.'
+          grund: 'Zweite Einheit in Folge unter dem Mindestziel (' + repMin + ' Wdh.). Ein Gewichts-Deload ist hier kaum möglich, weil die Last schon minimal ist — die Ermüdung muss also woanders raus.',
+          hinweis: [
+            ['Gewicht', 'Bleibt bei ' + fmtKgLokal(topKg) + ' kg; weniger ergibt hier keinen sinnvollen Schritt.'],
+            ['Wiederholungen', 'Mindestens ' + repMin + ' pro Satz — erst sauber zurück in den Bereich.'],
+            ['Anstrengung', '2–3 Wiederholungen in Reserve (RPE 7–8).'],
+            ['Stattdessen', 'Nimm die Ermüdung anders raus: ' + (saetze > 1 ? 'einen Satz weniger, ' : '') + 'einen Trainingstag Pause, mehr Schlaf. Oder senke das Wiederholungsziel vorübergehend.']
+          ]
         };
       }
       return {
-        typ: 'halten', kg: topKg,
-        text: 'Gewicht halten: ' + fmtKgLokal(topKg) + ' kg',
-        grund: 'Mindestens ein Satz lag unter dem Mindestziel (' + repMin + ' Wdh.). Erst die Wiederholungen zurückerobern, dann weiter steigern. Bleibt es nächstes Mal wieder darunter, schlage ich einen Deload vor.'
+        typ: 'halten', kg: topKg, reps: repMin,
+        text: fmtKgLokal(topKg) + ' kg × ' + repMin + ' Wdh. zurückerobern',
+        grund: 'Mindestens ein Satz lag unter dem Mindestziel (' + repMin + ' Wdh.). Einmal ist noch kein Muster — das kann ein schlechter Tag gewesen sein. Erst die Wiederholungen zurückerobern, dann weiter steigern.',
+        hinweis: [
+          ['Gewicht', fmtKgLokal(topKg) + ' kg — unverändert, noch kein Deload.'],
+          ['Wiederholungen', 'Mindestens ' + repMin + ' pro Satz, also zurück in den Zielbereich ' + repMin + '–' + repMax + '.'],
+          ['Anstrengung', '1–2 Wiederholungen in Reserve (RPE 8–9).'],
+          ['Danach', 'Klappt es, läuft die normale Progression weiter. Bleibst du wieder darunter, schlage ich einen Deload vor.']
+        ]
       };
     }
     /* im Bereich → Wiederholungen steigern */
     const minReps = Math.min(...ws.map(s => s.reps));
+    const zielReps = Math.min(minReps + 1, repMax);
+    const inc = inkrement(ex, topKg);
     return {
-      typ: 'wdh', kg: topKg,
-      text: fmtKgLokal(topKg) + ' kg halten, ' + Math.min(minReps + 1, repMax) + '+ Wdh. anpeilen',
-      grund: 'Du bist im Zielbereich (' + repMin + '–' + repMax + ' Wdh.). Doppelte Progression: bei gleichem Gewicht Wiederholungen steigern; sobald alle Sätze ' + repMax + ' erreichen, kommt der nächste Gewichtssprung.'
+      typ: 'wdh', kg: topKg, reps: zielReps,
+      text: fmtKgLokal(topKg) + ' kg × ' + zielReps + ' Wdh. anpeilen',
+      grund: 'Du bist im Zielbereich (' + repMin + '–' + repMax + ' Wdh.). Doppelte Progression: bei gleichem Gewicht erst die Wiederholungen steigern; sobald alle Sätze ' + repMax + ' erreichen, kommt der nächste Gewichtssprung.',
+      hinweis: [
+        ['Gewicht', fmtKgLokal(topKg) + ' kg — unverändert.'],
+        ['Wiederholungen', zielReps + ' pro Satz (schwächster Satz letztes Mal: ' + minReps + ').'],
+        ['Anstrengung', '1–2 Wiederholungen in Reserve (RPE 8–9).'],
+        ['Danach', 'Stehen überall ' + repMax + ' Wdh., geht es auf ' + fmtKgLokal(topKg + inc) + ' kg hoch.']
+      ]
     };
   }
 

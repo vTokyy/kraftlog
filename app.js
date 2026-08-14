@@ -393,20 +393,33 @@ function progressionFor(exId, repMin, repMax) {
   /* Klassik-Modus (Coach aus): einfache Pauschalregel mit den Einstellungs-Werten */
   const inc = (ex.compound && (ex.mg === 'Beine' || ex.mg === 'Gesäß')) ? S.settings.incLower : S.settings.incUpper;
   const topKg = Math.max(...ws.map(s => s.kg || 0));
+  /* Auch ohne Coach trägt jeder Vorschlag sein Wiederholungsziel — eine nackte
+     kg-Zahl lässt offen, woran man merkt, ob der Vorschlag aufgegangen ist. */
   if (ws.every(s => s.reps >= repMax)) {
-    return { typ: 'plus', kg: topKg + inc, text: '+' + fmtKg(inc) + ' kg → ' + fmtKg(topKg + inc) + ' kg (' + repRangeText(repMin, repMax) + ')' };
+    return { typ: 'plus', kg: topKg + inc, reps: repMin, text: '+' + fmtKg(inc) + ' kg → ' + fmtKg(topKg + inc) + ' kg × ' + repMin + ' Wdh.' };
   }
   if (ws.some(s => s.reps < repMin)) {
     const prevBelow = wsDavor && wsDavor.some(s => s.reps < repMin);
     if (prevBelow) {
       const deload = Math.max(0, Math.min(topKg - 2.5, Math.round(topKg * 0.95 / 2.5) * 2.5));
       if (deload > 0 && deload < topKg) {
-        return { typ: 'halten', kg: deload, text: 'Deload erwägen: ' + fmtKg(deload) + ' kg' };
+        return {
+          typ: 'deload', kg: deload, reps: repMax,
+          text: 'Deload: ' + fmtKg(deload) + ' kg × ' + repMax + ' Wdh.',
+          hinweis: [
+            ['Gewicht', fmtKg(deload) + ' kg statt ' + fmtKg(topKg) + ' kg.'],
+            ['Wiederholungen', repMax + ' pro Satz — mit dem leichteren Gewicht muss das obere Ziel wieder stehen.'],
+            ['Sätze', 'Unverändert. Nur die Intensität sinkt, nicht das Volumen.'],
+            ['Anstrengung', '2–3 Wiederholungen in Reserve. Ein Deload bis ans Versagen ist keiner.'],
+            ['Danach', 'Nächste Einheit wieder ' + fmtKg(topKg) + ' kg anpeilen.']
+          ]
+        };
       }
     }
-    return { typ: 'halten', kg: topKg, text: 'Gewicht halten: ' + fmtKg(topKg) + ' kg (' + repRangeText(repMin, repMax) + ')' };
+    return { typ: 'halten', kg: topKg, reps: repMin, text: fmtKg(topKg) + ' kg × ' + repMin + ' Wdh. zurückerobern' };
   }
-  return { typ: 'wdh', kg: topKg, text: fmtKg(topKg) + ' kg halten, +1 Wdh. anpeilen' };
+  const zielReps = Math.min(Math.min(...ws.map(s => s.reps)) + 1, repMax);
+  return { typ: 'wdh', kg: topKg, reps: zielReps, text: fmtKg(topKg) + ' kg × ' + zielReps + ' Wdh. anpeilen' };
 }
 
 /* ---------- Wochenstatistik (ISO-Woche, Montag-basiert) ---------- */
@@ -924,7 +937,10 @@ function renderExCard(wex, xi) {
   if (prog.typ === 'neu') {
     h += '<div class="prog-row"><span class="prog-chip neutral">' + esc(prog.text) + '</span>' + warum + '</div>';
   } else {
-    const cls = prog.typ === 'plus' ? '' : (prog.typ === 'halten' ? 'halten' : 'neutral');
+    /* Der Deload bekommt eine eigene Farbe: er ist der einzige Vorschlag, der das
+       Gewicht senkt — das darf nicht wie ein normales „halten" aussehen. */
+    const cls = prog.typ === 'plus' ? ''
+      : (prog.typ === 'deload' ? 'deload' : (prog.typ === 'halten' ? 'halten' : 'neutral'));
     h += '<div class="prog-row">' +
       '<button class="prog-chip ' + cls + '" data-action="prog-apply" data-ex="' + xi + '" data-kg="' + prog.kg + '"' + (prog.reps ? ' data-reps="' + prog.reps + '"' : '') + '>' + esc(prog.text) + '</button>' + warum + '</div>';
   }
@@ -1566,9 +1582,9 @@ function renderTimerBar() {
     aw.rest.signaled = true;
     save();
     if (S.settings.sound) {
-      /* "Let's go" als Pausenende-Signal; darf der Clip nicht spielen, springt
-         die Glocke ein (Vordergrund per WebAudio, Hintergrund per Audio-Element). */
-      Signal.hype(() => { Signal.beep(); Signal.beepLaut(); });
+      /* Gong als Pausenende-Signal; darf er nicht spielen, springt die synthetische
+         Glocke ein (Vordergrund per WebAudio, Hintergrund per Audio-Element). */
+      Signal.gong(() => { Signal.beep(); Signal.beepLaut(); });
     }
     if (S.settings.vibration) Signal.vibrate();
     notifyPause();
@@ -3368,9 +3384,18 @@ const ACTIONS = {
     const ex = exById(wex.exId);
     const prog = progressionFor(wex.exId, wex.repMin, wex.repMax);
     const k = Coach.info(ex);
+    /* „So setzt du das um" steht bewusst vor der Begründung: im Training will man
+       zuerst wissen, was zu tun ist — die Herleitung kann darunter warten. */
+    const schritte = (prog.hinweis && prog.hinweis.length)
+      ? '<div class="section-title">So setzt du das um</div><div class="card coach-schritte">' +
+        prog.hinweis.map(z => '<div class="coach-schritt"><span class="coach-was">' + esc(z[0]) +
+          '</span><span class="coach-wie">' + esc(z[1]) + '</span></div>').join('') + '</div>'
+      : '';
     openSheet('<div class="sheet-title">Coach-Empfehlung</div>' +
       '<div class="sheet-sub"><b>' + esc(ex.name) + '</b> · ' + esc(k.label) + '</div>' +
-      '<div class="info-box"><b>' + esc(prog.text) + '</b>' + (prog.grund ? '<br><br>' + esc(prog.grund) : '') + '</div>' +
+      '<div class="info-box"><b>' + esc(prog.text) + '</b></div>' +
+      schritte +
+      (prog.grund ? '<div class="section-title">Warum</div><div class="info-box">' + esc(prog.grund) + '</div>' : '') +
       '<div class="info-box">Satzpause: <b>' + fmtMinSek(restTarget(wex.exId, wex.restSec)) + ' min</b><br>' +
       ((wex.restSec || (S.exerciseSettings[wex.exId] && S.exerciseSettings[wex.exId].restSec))
         ? 'Von dir festgelegt (Plan- bzw. Übungs-Einstellung).'

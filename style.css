@@ -439,6 +439,12 @@ svg { display: block; }
 button.prog-chip:active { transform: scale(0.96); }
 .prog-chip.neutral { background: var(--blue-soft); color: var(--blue-ink); }
 .prog-chip.halten { background: var(--orange-soft); color: var(--orange-ink); }
+/* Der einzige Vorschlag, der Gewicht wegnimmt — eigene Farbe, damit man ihn nicht
+   für ein normales „halten" hält und versehentlich weitermacht wie bisher. */
+.prog-chip.deload { background: var(--red-soft); color: var(--red-ink); }
+/* Der Chip trägt jetzt Gewicht UND Wiederholungen; auf schmalen Geräten darf er
+   umbrechen statt aus der Karte zu laufen. */
+.prog-chip { max-width: 100%; white-space: normal; text-align: left; padding-top: 6px; padding-bottom: 6px; }
 .prog-row { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin: 0 0 var(--sp-2); }
 
 /* Satzzeile — das dichteste und meistberührte Element der App.
@@ -916,6 +922,13 @@ circle.chart-dot { stroke: var(--card); stroke-width: 2; }
 .diff-zeile { display: flex; align-items: baseline; gap: var(--sp-2); font-size: 15px; line-height: 1.4; padding: 3px 0; }
 .diff-zeile b { font-weight: 700; }
 .diff-punkt { width: 5px; height: 5px; border-radius: 50%; background: var(--text-2); flex-shrink: 0; transform: translateY(-3px); }
+
+/* „So setzt du das um" im Coach-Sheet: Was links, Wie rechts */
+.coach-schritte { padding: var(--sp-2) var(--sp-4); }
+.coach-schritt { display: flex; gap: var(--sp-3); padding: var(--sp-2) 0; position: relative; align-items: baseline; }
+.coach-schritt + .coach-schritt::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 1px; background: var(--sep); }
+.coach-was { flex: 0 0 96px; font-size: 13px; font-weight: 700; color: var(--text-2); text-transform: uppercase; letter-spacing: 0.4px; line-height: 1.5; }
+.coach-wie { flex: 1; min-width: 0; font-size: 15px; line-height: 1.4; }
 
 /* Reihenfolge-Sheet im laufenden Training: Nummer, Übung, zwei Pfeile */
 .ord-liste { padding: var(--sp-2) var(--sp-4); }

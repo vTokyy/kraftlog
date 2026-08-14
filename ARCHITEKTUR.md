@@ -46,9 +46,9 @@ Quellcode: `~/Desktop/Kraftlog-Quellcode/` (eigenes Git-Repo).
 | `style.css` | 507 | Design-Tokens als CSS-Variablen, dreifache Dark/Light-Mechanik, Safe-Area, Blur-Tab-Bar, max-width 560 px. |
 | `exercises.js` | 106 | Statische Übungsdatenbank: **77 Übungen**, 10 Muskelgruppen, 7 Equipment-Typen. |
 | `icons.js` | 63 | SVG-Übungskacheln: Hintergrundfarbe = Muskelgruppe (10 Farben), Piktogramm = Equipment. |
-| `coach.js` | 159 | Evidenzbasiertes Offline-Regelwerk: Pausen, Rep-Bereiche, Laststeigerung, Deload, Wochenvolumen-Ziele. |
+| `coach.js` | 208 | Evidenzbasiertes Offline-Regelwerk: Pausen, Rep-Bereiche, Laststeigerung, Deload, Wochenvolumen-Ziele. Jede Empfehlung trägt Gewicht **und** Wiederholungsziel plus Umsetzungsschritte. |
 | `charts.js` | 127 | Handgerollte SVG-Charts (`lineChart`, `barChart`), Farben nur über CSS-Variablen → Dark Mode automatisch. |
-| `timer.js` | 174 | Signal-Primitiven: „Let's go"-Clip als Pausenende-Signal (MP3-Data-URI), WebAudio-Glocke als Rückfall, eingebettete WAV-Töne, Audio Session API, Vibration. |
+| `timer.js` | 174 | Signal-Primitiven: Gong als Pausenende-Signal (Undertaker-Bell, MP3-Data-URI), WebAudio-Glocke als Rückfall, eingebettete WAV-Töne, Audio Session API, Vibration. |
 | `app.js` | 3336 | Die gesamte App-Engine (State, Rendering, Workout-Maschine, Import/Export, Strava, Push). |
 | `sw.js` | 68 | Service Worker: Precache (13 Dateien), cache-first, Push-Handler. |
 | `manifest.webmanifest` | 17 | PWA-Manifest (standalone, portrait, Icons inkl. maskable). |
@@ -165,7 +165,7 @@ Reihenfolge in der Tab-Bar: **Profil · Verlauf · Start (Mitte, hervorgehoben) 
   neue Pause (`rest`-Objekt mit Timestamps) und plant den Push-Weckruf.
 - **Pausenziel-Hierarchie:** Plan-Override → Übungs-Override → Coach-Kategorie
   (bzw. Klassik-Pauschale). Timer-Bar: Fortschrittsbalken, „+30 s", „Skip",
-  „Los!" (exakte Pausenmessung). Am Ziel: „Let's go"-Clip + Vibration + lokale
+  „Los!" (exakte Pausenmessung). Am Ziel: Gong + Vibration + lokale
   Notification (siehe Abschnitt 8).
 - **Editieren während des Trainings:** Sätze überall einfügen/löschen (der
   Pausen-Zeiger wird per Index-Korrektur bzw. Objekt-Identität gerettet), Übungen
@@ -198,12 +198,12 @@ Reihenfolge in der Tab-Bar: **Profil · Verlauf · Start (Mitte, hervorgehoben) 
 
 Drei sich ergänzende Wege, bewusst so gebaut, dass **laufende Musik nicht stoppt**:
 
-1. **In der App (Vordergrund):** der **„Let's go"-Clip** (DaBaby, 3 s, mono, als
+1. **In der App (Vordergrund):** der **Gong** (Undertaker-Bell, 3,6 s, mono, als
    MP3-Data-URI in `timer.js` eingebettet — die App bleibt damit offline-tauglich und
    die Single-File-Variante lädt nichts nach) + Vibration + lokale Notification. Er
    läuft über ein Audio-Element und tönt deshalb auch im Hintergrund, solange die
    Audio-Session gehalten wird. Darf er nicht spielen (Autoplay-Sperre), springt die
-   **WebAudio-Glocke** ein (zwei Anschläge, 660 Hz + Obertöne 1320/1980 Hz,
+   **synthetische WebAudio-Glocke** ein (zwei Anschläge, 660 Hz + Obertöne 1320/1980 Hz,
    exponentieller Ausklang) — das Pausenende geht nie lautlos vorbei. Über die
    **Audio Session API** (Safari 17+) läuft die App im Modus `ambient` (mischt sich mit
    Musik) und wechselt nur fürs Signal kurz auf `transient`.
@@ -238,8 +238,25 @@ am oberen Rep-Limit → +Inkrement, Reps-Reset ans untere Ende = doppelte Progre
 gerundet, mindestens ein echter 2,5-kg-Schritt, geclampt ≥ 0; bei Minigewichten
 stattdessen „Erholung einplanen") → **erstes Verfehlen** (halten) → **im Zielbereich**
 (+1 Wiederholung anpeilen). Zeit-/Strecken-Übungen (Plank, Farmer's Walk) sind per
-`hint` ausgenommen („Manuell steigern"). Jede Empfehlung trägt eine „Warum?"-Begründung
-mit realem Prozentsatz.
+`hint` ausgenommen („Manuell steigern").
+
+**Form einer Empfehlung:** `{ typ, kg, reps, text, grund, hinweis }`.
+
+- `text` ist der Chip im Training und nennt **immer Gewicht und Wiederholungsziel**
+  („Deload: 72,5 kg × 10 Wdh. (−9 %)"). Eine nackte kg-Zahl ließ offen, woran man
+  merkt, ob der Vorschlag aufgegangen ist — beim Deload war das der eigentliche
+  Stolperstein: −10 % bis ans Versagen geprügelt ist kein Deload.
+- `reps` füllt beim Tippen auf den Chip (`prog-apply`) die offenen Arbeitssätze mit,
+  nicht mehr nur `kg`.
+- `hinweis` sind Paare `[Was, Wie]` — Gewicht / Wiederholungen / Sätze / Anstrengung
+  (RIR-Vorgabe) / Danach. Das „Warum?"-Sheet zeigt sie als **„So setzt du das um"**
+  über der Begründung: im Training will man zuerst wissen, was zu tun ist.
+- `grund` ist die Herleitung, weiterhin mit realem Prozentsatz.
+- Der Deload hat einen eigenen `typ` (`'deload'`) und damit eine eigene Chip-Farbe
+  (rot statt orange) — er ist der einzige Vorschlag, der Gewicht **wegnimmt**, und darf
+  nicht wie ein normales „halten" aussehen.
+
+Der Klassik-Modus (Coach aus, in `progressionFor`) trägt dieselben Wiederholungsziele.
 
 **Wochenvolumen-Ziele** (direkte Arbeitssätze/Woche): Brust 12–18, Rücken 14–20,
 Schultern 12–20, Bizeps 10–16, Trizeps 8–12, Beine 14–26, Gesäß 8–14, Bauch/Core 10–16,
