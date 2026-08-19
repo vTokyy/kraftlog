@@ -46,7 +46,7 @@ Quellcode: `~/Desktop/Kraftlog-Quellcode/` (eigenes Git-Repo).
 | `style.css` | 507 | Design-Tokens als CSS-Variablen, dreifache Dark/Light-Mechanik, Safe-Area, Blur-Tab-Bar, max-width 560 px. |
 | `exercises.js` | 106 | Statische Übungsdatenbank: **77 Übungen**, 10 Muskelgruppen, 7 Equipment-Typen. |
 | `icons.js` | 63 | SVG-Übungskacheln: Hintergrundfarbe = Muskelgruppe (10 Farben), Piktogramm = Equipment. |
-| `coach.js` | 208 | Evidenzbasiertes Offline-Regelwerk: Pausen, Rep-Bereiche, Laststeigerung, Deload, Wochenvolumen-Ziele. Jede Empfehlung trägt Gewicht **und** Wiederholungsziel plus Umsetzungsschritte. |
+| `coach.js` | 520 | Evidenzbasiertes Offline-Regelwerk: Pausen, Rep-Bereiche, Laststeigerung, Deload, Wochenvolumen-Ziele. Jede Empfehlung trägt Gewicht **und** Wiederholungsziel plus Umsetzungsschritte. |
 | `charts.js` | 127 | Handgerollte SVG-Charts (`lineChart`, `barChart`), Farben nur über CSS-Variablen → Dark Mode automatisch. |
 | `timer.js` | 174 | Signal-Primitiven: Gong als Pausenende-Signal (Undertaker-Bell, MP3-Data-URI), WebAudio-Glocke als Rückfall, eingebettete WAV-Töne, Audio Session API, Vibration. |
 | `app.js` | 3336 | Die gesamte App-Engine (State, Rendering, Workout-Maschine, Import/Export, Strava, Push). |
@@ -92,6 +92,129 @@ ein `window.*`-Objekt exportieren (`KraftlogIcons`, `KraftlogCoach`, `KraftlogCh
   (selbstheilend bei Edits/Löschungen). e1RM nach **Epley**: `kg · (1 + reps/30)`
   (bei 1 Wiederholung direkt `kg`), nur für 1–15 Wiederholungen gewertet.
   PR-Priorität: Gewicht > e1RM > Wiederholungen.
+
+### Vorgabewerte beim Trainingsstart (`satzVorgabe`)
+
+`buildWoExercise()` füllt jeden Arbeitssatz aus zwei Quellen: dem Plan-Ziel und dem
+entsprechenden Satz der **letzten** Einheit. Bis v35 gewann dabei immer der Plan
+(`z.reps != null ? z.reps : ref.reps`) — mit einer stillen Falle: Plan 8/8/5, letzte
+Einheit tatsächlich 8/8/6, im Feld stand wieder **5**. Wer dann 6 schafft, hält das
+für Fortschritt, obwohl es exakt der Vorwoche entspricht.
+
+Seit v36 gilt: **das Plan-Ziel ist eine Untergrenze, kein Deckel.** Die Vorgabe liegt
+nie unter dem, was zuletzt schon stand. Wiederholungen werden dabei nur übernommen,
+wenn sie bei **mindestens demselben Gewicht** zustande kamen — mehr Wdh. bei weniger
+Last sind kein Fortschritt und als Vorgabe für ein schwereres Gewicht falsch.
+
+Die Regel ist als reine Funktion `satzVorgabe(z, ref)` herausgezogen und mit
+`test-vorgabe.js` abgedeckt (12 Fälle inkl. Körpergewicht und leerer Historie).
+
+Unberührt bleibt `repMin`/`repMax` für den Coach: die kommen weiter aus dem **Plan**,
+nicht aus der Vorbelegung. Sonst würde eine einzelne gute Einheit den Boden dauerhaft
+anheben und eine spätere Normalleistung als „verfehlt" gelten.
+
+### Coach-Vorschlag übernehmen (`vorschlagAufSaetze`)
+
+Der Chip `prog-apply` schrieb das Wiederholungsziel bis v36 in **alle** offenen
+Arbeitssätze. Seit dem Coach-Umbau ist das falsch: „62,5 kg × 6 Wdh." meint den
+**Top-Satz**, nicht jeden Satz — der Abfall über die Sätze ist eine eigene Achse.
+Aus einer Vorbelegung 8/8/6 konnte so bei einem Halte-Vorschlag ein 5/5/5 werden,
+also genau der Rückschritt, den `satzVorgabe()` gerade verhindert.
+
+Seit v37: **Gewicht** auf alle offenen Arbeitssätze, **Wiederholungsziel** nur auf den
+ersten. Die hinteren behalten ihre Vorbelegung, **gedeckelt** auf das Ziel — kein
+späterer Satz darf über dem ersten stehen (bei gleicher Last unplausibel), niedriger
+darf er sein. Leere Felder bekommen das Ziel als Startwert.
+
+| Vorbelegung | Vorschlag | Ergebnis |
+|---|---|---|
+| 8/8/6 @ 60 | 62,5 kg × 6 | 6/6/6 @ 62,5 |
+| 8/8/6 @ 60 | 60 kg × 8 | 8/8/**6** @ 60 |
+| 8/8/6 @ 60 | 60 kg × 10 | 10/8/6 @ 60 |
+
+Abgedeckt durch `test-apply.js` (8 Fälle inkl. Aufwärm- und erledigter Sätze).
+
+### Abgehakte Sätze bleiben bearbeitbar (ab v38)
+
+Bis v37 setzte das Rendering `disabled` auf die gesamte Zeile, sobald ein Satz
+abgehakt war (`const dis = (done || auswahl) ? ' disabled' : ''`) — inklusive des
+Hakens selbst. Ein Vertipper war damit nur durch Löschen und Neuanlegen des Satzes
+zu korrigieren. `checkSet()` konnte Sätze die ganze Zeit wieder aufmachen
+(`if (s.done === true) { s.done = false; … }`), der Pfad war über die UI nur
+unerreichbar.
+
+Jetzt sperrt `dis` nur noch im **Auswahl-Modus**, wo die Zeile als Checkbox dient.
+
+**Folge davon — PR-Neuberechnung.** Wer 100 × 8 abhakt (PR!) und den Vertipper auf
+100 × 5 korrigiert, hätte sonst ein falsches PR-Abzeichen am Satz und beim Speichern
+eine Historie, die einen Rekord behauptet, den es nie gab. `prNeuBerechnen(xi)`
+bewertet deshalb **alle** abgehakten Sätze der Übung in Abhak-Reihenfolge neu — es
+reicht nicht, nur den geänderten Satz zu prüfen, weil PRs aufeinander aufbauen:
+korrigiert man den ersten Satz nach unten, kann der dritte nachträglich zum PR werden.
+
+Aufgerufen an drei Stellen:
+
+| Auslöser | Warum |
+|---|---|
+| `input` auf kg/Wdh. eines abgehakten Satzes | Wert geändert. **Ohne `render()`** — das würde beim Tippen den Fokus aus dem Feld reißen |
+| `change` (Feld verlassen) | zieht die Abzeichen nach, hier ist `render()` unschädlich |
+| `set-warmup` auf einem abgehakten Satz | Aufwärmsätze zählen nicht für PRs |
+
+Der `change`-Zweig steht **vor** dem Einstellungs-Zweig: Workout-Felder tragen
+ebenfalls ein `data-set` (den Satz-Index), das dort sonst als Einstellungs-Schlüssel
+gelesen würde.
+
+CSS: `.set-row.done .step-btn` lief auf `opacity: 0.3`, weil die Buttons tatsächlich
+deaktiviert waren — jetzt `0.6`, sonst sehen bedienbare Buttons tot aus. Dass die
+Zeile erledigt ist, trägt der grüne Hintergrund.
+
+Abgedeckt durch `test-pr-edit.js` (10 Fälle inkl. PR-Ketten und Aufwärmsätzen).
+
+### Pausenziel je Satz (ab v39)
+
+Pausen hingen bisher an der Übung. Jetzt kann jeder Satz — auch jeder
+Aufwärmsatz — eine eigene Zeit tragen; die Standardwerte bleiben unverändert und
+greifen überall, wo nichts eingetragen ist.
+
+**Zwei Felder, die man nicht verwechseln darf.** Am Trainingssatz ist `restSec`
+die **gemessene** Pause (`checkSet()` schreibt die verstrichene Zeit hinein,
+`setInfoLine` zeigt sie an). Die Vorgabe liegt deshalb auf einem eigenen Feld
+`restZiel` — auf demselben Feld wäre die Einstellung nach dem ersten Satz vom
+Messwert überschrieben. In der **Vorlage** heißt die Vorgabe `sets[].restSec`,
+weil es dort keine Messung gibt.
+
+`restZielFuerSatz(wex, si)` liefert das Ziel, oder `null` für „kein Timer":
+
+1. `restZiel` des Satzes (aus dem Plan bzw. heute im Sheet gesetzt)
+2. Arbeitssatz → `restTarget()` wie bisher (Plan-Override → Übung → Coach)
+3. Aufwärmsatz → **nur der letzte eines Blocks** bekommt den Übungs-/Coach-Wert
+
+Zu 3: Zwischen Rampensätzen pausiert man nach Gefühl, ein voller Timer würde dort
+nur den Gong mehrfach pro Übung auslösen. Vor dem ersten Arbeitssatz ist die volle
+Pause dagegen richtig, damit man frisch hineingeht. „Letzter des Blocks" = der
+nächste Satz existiert und ist kein Aufwärmsatz; am Ende der Übung folgt nichts,
+worauf man sich erholen müsste. Mehrere Blöcke je Übung werden korrekt behandelt.
+
+| Sätze | Timer |
+|---|---|
+| W W W A A A | – – 180 · 180 180 180 |
+| W W A W A | – 180 · 180 · 180 180 |
+| W W W (ohne Arbeitssatz) | – – – |
+
+**Bearbeitet wird an zwei Stellen:** dauerhaft im Vorlagen-Editor (Spalte „P s"
+je Satzzeile, leer = `auto`), für heute im Satz-Optionen-Sheet (Tippen auf die
+Satznummer). Das Sheet zeigt im Platzhalter, was „auto" konkret bedeutet.
+
+**Zwei Stellen, die die Werte sonst verloren hätten** und deshalb mit angepasst
+wurden: `tplStrukturUpdate()` (Plan-Abgleich nach dem Training — baut die
+Vorlagen-Sätze aus dem Workout neu und hätte die Pausen weggeworfen; Quelle ist
+`restZiel`, nicht die gemessene `restSec`) und der Übungstausch im Training
+(Pausenziele wandern mit, der „auto"-Wert dahinter richtet sich danach nach der
+Muskelgruppe der neuen Übung).
+
+Abgedeckt durch `test-pause.js` (9 Fälle Aufwärmblock-Regel) und
+`test-pause-rundlauf.js` (Vorlage → Training → Plan-Abgleich → Vorlage, plus
+Altbestand ohne die neuen Felder).
 
 ## 5. Datenmodell (localStorage `kraftlog-state-v1`)
 
@@ -247,23 +370,82 @@ lief über die Kategorie und endete bei 90 s für kleine Muskeln; das ließ in d
 zu wenig Leistung für den nächsten Satz übrig.
 
 **2. Wiederholungen und Steigerung hängen an der Kategorie** (`KATEGORIEN`,
-Verbund/Isolation × Unterkörper/Oberkörper bzw. große/kleine Muskelgruppe):
+Verbund/Isolation × Unterkörper/Oberkörper bzw. große/kleine Muskelgruppe).
+Die Rep-Werte sind **nur Rückfallwerte**, wenn der Plan keine Satzziele vorgibt:
 
-| Kategorie | Reps | Steigerung | Deckel |
-|---|---|---|---|
-| Unterkörper-Grundübung | 6–10 | 5 % | 2,5–10 kg |
-| Oberkörper-Grundübung | 6–10 | 2,5 % | 2,5–5 kg |
-| Isolation, große Muskelgruppe | 8–12 | 2,5 % | 2,5–5 kg |
-| Isolation, kleine Muskelgruppe | 10–15 | 2 % | fix 2,5 kg |
+| Kategorie | Reps | Steigerung | Deckel | Raster |
+|---|---|---|---|---|
+| Unterkörper-Grundübung | 5–8 | 5 % | 2,5–10 kg | 2,5 kg |
+| Oberkörper-Grundübung | 5–8 | 2,5 % | 2,5–5 kg | 2,5 kg |
+| Isolation, große Muskelgruppe | 8–12 | 2,5 % | 2,5–5 kg | 2,5 kg |
+| Isolation, kleine Muskelgruppe | 8–12 | 2 % | 1,25–2,5 kg | 1,25 kg |
 
-`empfehlung()` entscheidet in dieser Reihenfolge: **RPE-Gating** (alle Sätze am
-Maximum, aber RPE > 9 → halten, erst Reserve aufbauen) → **Laststeigerung** (alle Sätze
-am oberen Rep-Limit → +Inkrement, Reps-Reset ans untere Ende = doppelte Progression) →
-**Deload** (zweimal in Folge unter dem Rep-Minimum → ~−10 %, aufs 2,5-kg-Raster
-gerundet, mindestens ein echter 2,5-kg-Schritt, geclampt ≥ 0; bei Minigewichten
-stattdessen „Erholung einplanen") → **erstes Verfehlen** (halten) → **im Zielbereich**
-(+1 Wiederholung anpeilen). Zeit-/Strecken-Übungen (Plank, Farmer's Walk) sind per
-`hint` ausgenommen („Manuell steigern").
+### Bewertungslogik (2026-08 neu geschrieben)
+
+Die Vorgängerfassung hatte zwei Konstruktionsfehler, die offensichtlichen Unsinn
+empfohlen haben, und beide sind hier der Grund für die jetzige Struktur:
+
+1. Sie prüfte `ws.every(reps >= repMax)` und erhöhte dann sofort. Bei einem Plan
+   2 × 5 hieß das: zweimal 5 Wdh. → mehr Gewicht. Kein Bestätigungskriterium,
+   keine Berücksichtigung, **wie schwer** die 5 Wdh. waren.
+2. Sie wertete jeden Satz unter `repMin` als Einbruch. 10/8/5 bei gleicher Last
+   ergab „3 × 6 zurückerobern" — eine **Reduktion**, obwohl der Top-Satz 10 Wdh.
+   lieferte.
+
+Deshalb laufen jetzt **zwei unabhängige Achsen**:
+
+- **Leistungsachse — nur der Top-Satz** (`topSatz()`: höchste Last, bei Gleichstand
+  meiste Wdh.). Er entscheidet über die Last. Spätere Sätze tragen Ermüdung mit sich
+  und sagen über die Tragfähigkeit der Last nichts aus.
+- **Ermüdungsachse — Wiederholungsabfall** (`abfallAnalyse()`, nur über Sätze mit
+  **gleicher** Last, damit eine geplante Pyramide nicht als Abfall zählt).
+  Schwellen analog zum Velocity Loss: ≤ 25 % normal, > 25 % auffällig, > 40 % stark.
+  Ein Abfall ist ein **Ermüdungs**signal (Pause, Anlauf im ersten Satz) und führt
+  **nie** zu einer Lastreduktion.
+
+Zwei getrennte Schwellen statt einer, sonst wird ein echter Bereich falsch gelesen:
+`ziel = repMax` (ab hier ist Steigerung ein Thema), `boden = repMin` (erst darunter
+ist das Ziel **verfehlt**). Bei festem Satzziel fallen beide zusammen; im Bereich
+6–8 sind 7 Wdh. Zwischenstand, kein Einbruch.
+
+**Steigerung setzt einen Reserve-Nachweis voraus** — „Ziel getroffen" allein reicht
+nie (in allen drei APRE-Varianten liegt „Ziel getroffen" im Halten-Band, erhöht wird
+ab 2 Wdh. darüber). Zwei gleichwertige Wege:
+
+- **über RPE:** `(topReps − ziel) + RIR ≥ 2`, mit `RIR = clamp(10 − RPE, 0, 5)`
+- **ohne RPE:** Ziel in **zwei aufeinanderfolgenden** Einheiten bei ≥ gleicher Last
+
+RPE ist damit **Modifikator, nie Voraussetzung** — RIR-Schätzungen sind nur nahe am
+Versagen belastbar, deshalb der Deckel bei 5.
+
+`empfehlung()` entscheidet in dieser Reihenfolge:
+
+1. **Last trägt nicht** (`dU ≤ weg`) → Reduktion, **am Ausmaß bemessen**: ~3 % je
+   fehlender Wdh., gedeckelt auf 5–15 %. (Vorher pauschal −10 %, was bei 2 von 8
+   Wdh. viel zu wenig war.)
+2. **Ziel verfehlt** (`dU < 0`) → zweimal in Folge bei ≥ gleicher Last: Deload;
+   sonst halten. Auch dauerhaftes Verfehlen um **eine** Wdh. löst aus — sonst gäbe
+   es für Stagnation keine Ausfahrt.
+3. **Steigerung gebremst** → Nachweis liegt vor, aber der Satzabfall ist **neu**
+   stark (> 40 %, letztes Mal nicht) oder das Gesamtvolumen ist > 10 % eingebrochen.
+   Dann eine Einheit halten und die Ermüdung verteilen. Ein **dauerhaft** starker
+   Abfall bremst nicht — das ist dann der Trainingsstil, und die Last stünde sonst
+   für immer still.
+4. **Steigerung** → Schritt abgestuft (`dEff ≥ 5` → doppelter Schritt). Das
+   Wiederholungsziel an der neuen Last wird über **e1RM zurückgerechnet**, nicht
+   auf `repMin` gesetzt.
+5. **Im Bereich** (`d < 0`) → doppelte Progression, +1 Wdh.
+6. **Ziel erreicht, Reserve unbestätigt** → „bestätigen" (gleiche Wdh., nicht +1)
+   bzw. bei zu wenig RPE-Reserve „+1 anpeilen".
+
+**Schrittgröße** (`schritt()`) gibt **`null`** zurück, wenn selbst der kleinste
+verfügbare Sprung mehr als 10 % der Last wäre — 2,5 kg auf 10 kg sind 25 % und kein
+Steigerungsschritt. Dann wird über **Wiederholungen** gesteigert, und
+`repsFuerSprung()` rechnet über e1RM aus, ab welcher Wiederholungszahl der Sprung
+trägt. Das war die Ursache der unbrauchbaren Vorschläge bei leichten Übungen.
+
+Zeit-/Strecken-Übungen (Plank, Farmer's Walk) sind per `hint` ausgenommen
+(„Manuell steigern").
 
 **Form einer Empfehlung:** `{ typ, kg, reps, text, grund, hinweis }`.
 
@@ -281,16 +463,29 @@ stattdessen „Erholung einplanen") → **erstes Verfehlen** (halten) → **im Z
   (rot statt orange) — er ist der einzige Vorschlag, der Gewicht **wegnimmt**, und darf
   nicht wie ein normales „halten" aussehen.
 
-Der Klassik-Modus (Coach aus, in `progressionFor`) trägt dieselben Wiederholungsziele.
+Der **Klassik-Modus** (Coach aus, in `progressionFor`) behält seine eigenen
+Steigerungsschritte aus den Einstellungen (`incLower`/`incUpper`) — „Klassik" heißt:
+du legst die Schrittgröße selbst fest, nicht: die Beurteilung darf falsch sein.
+Er nutzt deshalb dieselbe Bewertungslogik: Top-Satz statt schwächstem Satz und
+Reserve-Nachweis (RPE oder zweite Einheit) vor dem Sprung.
 
 **Wochenvolumen-Ziele** (direkte Arbeitssätze/Woche): Brust 12–18, Rücken 14–20,
 Schultern 12–20, Bizeps 10–16, Trizeps 8–12, Beine 14–26, Gesäß 8–14, Bauch/Core 10–16,
 Waden 0–16, Unterarme 0–12 (min 0 = optional, nur Obergrenze geprüft).
 
-**Quellen (im Code zitiert):** Schoenfeld et al. 2016 & Grgic et al. 2017 sowie
-de Salles & Simão 2009 (Satzpausen), ACSM Position Stand 2009 (Laststeigerung 2–10 %),
-Helms et al. 2016 / Zourdos et al. 2016 (RPE/RIR-Autoregulation), Prinzip der
-doppelten Progression.
+**Quellen (im Code zitiert):**
+
+| Quelle | Wofür sie im Code steht |
+|---|---|
+| Robinson et al. 2024, *Sports Med* 54:2209–2231 | Nähe zum Versagen: Hypertrophie steigt mit geringerem RIR, **Kraft ist über einen weiten RIR-Bereich unverändert** → kein Grund, im niedrigen Rep-Bereich ans Versagen zu gehen |
+| Mann et al. 2010, *JSCR* 24(7):1718–23 (APRE) | Abgestufte, leistungsabhängige Lastanpassung; „Ziel getroffen" = **halten**, erhöht wird ab +2 Wdh. |
+| Plotkin et al. 2022, *PeerJ* 10:e14142 | Steigerung über Last und über Wiederholungen gleichwertig → Rep-Progression, wenn der Gewichtssprung zu grob wäre |
+| Greig et al. 2022, *Sports Med Open* 8:9 | Autoregulation ebenbürtig zur festen Prozentvorgabe |
+| Schoenfeld et al. 2017 / 2021 | Maximalkraft braucht schwere Lasten; Hypertrophie über breites Lastspektrum |
+| Schoenfeld et al. 2016, Grgic et al. 2017 | Satzpausen ≥ 2–3 min |
+| Velocity-Loss-Reviews (Held et al. 2022 u. a.) | ~20–25 % Leistungsverlust als Ermüdungsgrenze → Schwellen der Abfall-Achse |
+| Halperin et al. 2022 | RIR-Schätzungen nur nahe am Versagen belastbar → RIR-Deckel bei 5, RPE nie Voraussetzung |
+| ACSM Position Stand 2009 | Steigerungsschritt 2–10 % |
 
 ## 10. Wochenplan
 

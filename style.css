@@ -472,7 +472,11 @@ button.prog-chip:active { transform: scale(0.96); }
 .set-row.done .step-btn,
 .set-row.done .rpe-sel,
 .set-row.done .w-toggle { background: transparent; }
-.set-row.done .step-btn { opacity: 0.3; }
+/* Zurückgenommen, aber sichtbar bedienbar: abgehakte Sätze bleiben
+   korrigierbar, deshalb dürfen die ± -Buttons nicht mehr wie deaktiviert
+   aussehen (vorher 0.3, als sie tatsächlich `disabled` waren). Dass die Zeile
+   erledigt ist, trägt der grüne Hintergrund. */
+.set-row.done .step-btn { opacity: 0.6; }
 /* Der nächste offene Satz führt den Blick — ohne zu blinken */
 .set-row.next::after {
   content: ''; position: absolute; left: -4px; top: 7px; bottom: 7px; width: 3px;
@@ -866,6 +870,20 @@ circle.chart-dot { stroke: var(--card); stroke-width: 2; }
 .tpl-ex-foot { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-top: var(--sp-1); border-top: 1px solid var(--sep); padding-top: var(--sp-1); }
 .tpl-warmup-btn { color: var(--orange-ink) !important; }
 .wu-list { background: var(--card-2); border-radius: var(--r-lg); padding: var(--sp-2) var(--sp-4); margin-bottom: var(--sp-1); }
+/* Pausenspalte je Satz im Vorlagen-Editor. Schmal gehalten: die Zeile trägt
+   schon W-Schalter, kg, Wdh. und Löschen — auf 375 px Breite ist kein Platz
+   für ein weiteres volles Feld. */
+.tpl-set-rest { width: 52px; max-width: 52px; }
+.tpl-set-pause { margin-left: 2px; }
+
+/* Pausenzeile im Satz-Optionen-Sheet */
+.sheet-row-rest {
+  display: flex; align-items: center; gap: var(--sp-2);
+  margin: var(--sp-3) 0 var(--sp-1); font-size: 15px;
+}
+.sheet-row-rest .num-input { width: 84px; max-width: 84px; margin-left: auto; }
+.sheet-row-rest span:last-child { margin-left: 0; color: var(--text-2); font-size: 14px; }
+
 .tpl-rest { display: flex; align-items: center; gap: 6px; margin-left: auto; font-size: 14px; color: var(--text-2); }
 .tpl-rest-input { width: 72px; max-width: 72px; }
 .icon-btn { width: var(--tap); height: var(--tap); border-radius: var(--r-md); background: var(--card-2); color: var(--text-2); font-size: 16px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; transition: transform var(--dur-1) var(--ease-out), background var(--dur-1) var(--ease-out); }

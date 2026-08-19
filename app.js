@@ -3,9 +3,10 @@
  *   settings:        { theme, sound, vibration, restCompound, restIsolation, incUpper, incLower, lastExport }
  *   customExercises: [ { id:'cu-…', name, mg, eq, compound } ]
  *   exerciseSettings:{ exId: { restSec, notiz } }
- *   templates:       [ { id, name, createdAt, exercises:[{exId, restSec, sets:[{reps, kg?, warmup?}]}] } ]  // reps/kg = Ziel je Satz
+ *   templates:       [ { id, name, createdAt, exercises:[{exId, restSec, sets:[{reps, kg?, warmup?, restSec?}]}] } ]  // reps/kg/restSec = Ziel je Satz
  *   workouts:        [ { id, templateId, name, startedAt, finishedAt, notiz,
- *                        exercises:[{exId, repMin, repMax, sets:[{kg, reps, rpe, warmup, doneAt, restSec}]}] } ]
+ *                        exercises:[{exId, repMin, repMax, sets:[{kg, reps, rpe, warmup, doneAt, restSec, restZiel}]}] } ]
+ *                        restSec = GEMESSENE Pause, restZiel = eingestellte Vorgabe
  *   activeWorkout:   wie workout, Sätze zusätzlich mit done:true/false; rest = laufende Pause
  *   bodyweight:      [ { date:'YYYY-MM-DD', kg } ]
  * PRs werden nie gespeichert, immer aus der Historie berechnet.
@@ -222,6 +223,31 @@ function restTarget(exId, tplRest) {
   return pauseStandard(exId);
 }
 
+/* Pausenziel eines EINZELNEN Satzes — gibt null zurück, wenn nach diesem Satz
+   bewusst kein Timer laufen soll.
+
+   Reihenfolge:
+   1. `restZiel` des Satzes (aus dem Plan bzw. heute von Hand gesetzt)
+   2. Arbeitssatz            → Übungs-/Coach-Wert wie bisher (restTarget)
+   3. Aufwärmsatz            → nur der LETZTE eines Aufwärmblocks bekommt den
+                               Übungs-/Coach-Wert, alle anderen keinen Timer
+
+   Zu 3: Zwischen den Rampensätzen pausiert man nach Gefühl — ein voller Timer
+   würde dort nur den Gong ein halbes Dutzend Mal pro Übung auslösen. Vor dem
+   ersten Arbeitssatz ist die volle Pause aber genau richtig, damit man frisch
+   hineingeht. „Letzter des Blocks" heißt: der nächste Satz existiert und ist
+   kein Aufwärmsatz. Steht der Aufwärmsatz am Ende der Übung, folgt nichts mehr,
+   worauf man sich erholen müsste. */
+function restZielFuerSatz(wex, si) {
+  const s = wex.sets[si];
+  if (!s) return null;
+  if (s.restZiel > 0) return Math.round(s.restZiel);
+  if (!s.warmup) return restTarget(wex.exId, wex.restSec);
+  const naechster = wex.sets[si + 1];
+  if (naechster && !naechster.warmup) return restTarget(wex.exId, wex.restSec);
+  return null;
+}
+
 /* ---------- Satz-/Workout-Helfer ---------- */
 function isDone(s) { return s.done !== false; }          // fertige Workouts tragen kein done-Flag
 function workingSets(wex) { return wex.sets.filter(s => isDone(s) && !s.warmup && s.reps != null); }
@@ -271,6 +297,37 @@ function feedBests(b, s) {
   if (b.repsAtKg[key] == null || s.reps > b.repsAtKg[key]) b.repsAtKg[key] = s.reps;
 }
 /* Prüft einen Satz gegen Bestwerte. Höchstwertiger PR gewinnt: Gewicht > e1RM > Wdh. */
+/* PR-Markierungen einer Übung im laufenden Training neu bewerten.
+
+   Nötig, seit abgehakte Sätze bearbeitbar sind: wer 100 × 8 abhakt (PR!) und
+   den Vertipper auf 100 × 5 korrigiert, hätte sonst dauerhaft ein falsches
+   PR-Abzeichen am Satz — und beim Speichern des Trainings eine Historie, die
+   einen Rekord behauptet, den es nie gab.
+
+   Es reicht nicht, nur den geänderten Satz zu prüfen: PRs bauen aufeinander
+   auf. Korrigiert man den ersten Satz nach unten, kann dadurch der dritte
+   Satz nachträglich zum PR werden. Deshalb werden alle abgehakten Sätze
+   dieser Übung in Abhak-Reihenfolge neu durchgerechnet. */
+function prNeuBerechnen(xi) {
+  const aw = S.activeWorkout;
+  const wex = aw && aw.exercises[xi];
+  if (!wex) return;
+  const abgehakt = [];
+  aw.exercises.forEach((we2, x2) => {
+    if (we2.exId !== wex.exId) return;
+    we2.sets.forEach((s2, si2) => {
+      if (s2.done === true) abgehakt.push({ s: s2, at: s2.doneAt || 0, x: x2, i: si2 });
+    });
+  });
+  abgehakt.sort((a, b) => (a.at - b.at) || (a.x - b.x) || (a.i - b.i));
+  const bests = prBests(wex.exId, null);   // Stand der Historie, ohne das laufende Training
+  abgehakt.forEach(e => {
+    delete e.s.pr;
+    const pr = prGegen(bests, e.s);
+    if (pr) e.s.pr = pr.typ;
+    feedBests(bests, e.s);
+  });
+}
 function prGegen(b, s) {
   if (!b.any || s.warmup || s.kg == null || s.reps == null) return null;
   if (s.kg > 0 && (b.maxKg == null || s.kg > b.maxKg)) {
@@ -390,25 +447,47 @@ function progressionFor(exId, repMin, repMax) {
   const ws = workingSets(sess[sess.length - 1].wex);
   const wsDavor = sess.length > 1 ? workingSets(sess[sess.length - 2].wex) : null;
   if (coachAn) return Coach.empfehlung(ex, ws, wsDavor, repMin, repMax);
-  /* Klassik-Modus (Coach aus): einfache Pauschalregel mit den Einstellungs-Werten */
+  /* Klassik-Modus (Coach aus): eigene Steigerungsschritte aus den Einstellungen,
+     aber dieselbe Bewertungslogik wie im Coach. „Klassik" heißt hier: du legst
+     die Schrittgröße selbst fest — nicht: die Beurteilung darf falsch sein.
+     Deshalb auch hier Top-Satz statt schwächstem Satz (der Wiederholungsabfall
+     über die Sätze ist Ermüdung, kein Lastsignal) und Bestätigung vor dem
+     Sprung statt "einmal getroffen reicht". */
   const inc = (ex.compound && (ex.mg === 'Beine' || ex.mg === 'Gesäß')) ? S.settings.incLower : S.settings.incUpper;
-  const topKg = Math.max(...ws.map(s => s.kg || 0));
+  const top = Coach.topSatz(ws);
+  const topKg = top.kg || 0;
+  const topReps = top.reps || 0;
+  const topDavor = (wsDavor && wsDavor.length) ? Coach.topSatz(wsDavor) : null;
+  const rir = Coach.rirAus(top.rpe);
+  const bestaetigt = !!(topDavor && (topDavor.kg || 0) >= topKg && (topDavor.reps || 0) >= repMax);
   /* Auch ohne Coach trägt jeder Vorschlag sein Wiederholungsziel — eine nackte
      kg-Zahl lässt offen, woran man merkt, ob der Vorschlag aufgegangen ist. */
-  if (ws.every(s => s.reps >= repMax)) {
-    return { typ: 'plus', kg: topKg + inc, reps: repMin, text: '+' + fmtKg(inc) + ' kg → ' + fmtKg(topKg + inc) + ' kg × ' + repMin + ' Wdh.' };
+  if (topReps >= repMax) {
+    /* Reserve nachgewiesen: entweder über RPE oder über eine zweite Einheit. */
+    if ((rir != null && (topReps - repMax) + rir >= 2) || bestaetigt) {
+      return { typ: 'plus', kg: topKg + inc, reps: repMin, text: '+' + fmtKg(inc) + ' kg → ' + fmtKg(topKg + inc) + ' kg × ' + repMin + ' Wdh.' };
+    }
+    return {
+      typ: 'wdh', kg: topKg, reps: topReps,
+      text: fmtKg(topKg) + ' kg × ' + topReps + ' Wdh. bestätigen',
+      hinweis: [
+        ['Gewicht', fmtKg(topKg) + ' kg — unverändert.'],
+        ['Wiederholungen', topReps + ' im besten Satz, also wie letztes Mal.'],
+        ['Warum nicht mehr', 'Ein einzelner guter Tag ist noch kein Kraftzuwachs. Steht die Leistung ein zweites Mal — oder trägst du sie mit RPE ≤ 8 ein — geht das Gewicht hoch.']
+      ]
+    };
   }
-  if (ws.some(s => s.reps < repMin)) {
-    const prevBelow = wsDavor && wsDavor.some(s => s.reps < repMin);
+  if (topReps < repMin) {
+    const prevBelow = topDavor && (topDavor.kg || 0) >= topKg && (topDavor.reps || 0) < repMin;
     if (prevBelow) {
       const deload = Math.max(0, Math.min(topKg - 2.5, Math.round(topKg * 0.95 / 2.5) * 2.5));
       if (deload > 0 && deload < topKg) {
         return {
-          typ: 'deload', kg: deload, reps: repMax,
-          text: 'Deload: ' + fmtKg(deload) + ' kg × ' + repMax + ' Wdh.',
+          typ: 'deload', kg: deload, reps: repMin,
+          text: 'Deload: ' + fmtKg(deload) + ' kg × ' + repMin + ' Wdh.',
           hinweis: [
             ['Gewicht', fmtKg(deload) + ' kg statt ' + fmtKg(topKg) + ' kg.'],
-            ['Wiederholungen', repMax + ' pro Satz — mit dem leichteren Gewicht muss das obere Ziel wieder stehen.'],
+            ['Wiederholungen', repMin + ' im ersten Satz — mit dem leichteren Gewicht muss das Ziel wieder stehen.'],
             ['Sätze', 'Unverändert. Nur die Intensität sinkt, nicht das Volumen.'],
             ['Anstrengung', '2–3 Wiederholungen in Reserve. Ein Deload bis ans Versagen ist keiner.'],
             ['Danach', 'Nächste Einheit wieder ' + fmtKg(topKg) + ' kg anpeilen.']
@@ -418,7 +497,7 @@ function progressionFor(exId, repMin, repMax) {
     }
     return { typ: 'halten', kg: topKg, reps: repMin, text: fmtKg(topKg) + ' kg × ' + repMin + ' Wdh. zurückerobern' };
   }
-  const zielReps = Math.min(Math.min(...ws.map(s => s.reps)) + 1, repMax);
+  const zielReps = Math.min(topReps + 1, repMax);
   return { typ: 'wdh', kg: topKg, reps: zielReps, text: fmtKg(topKg) + ' kg × ' + zielReps + ' Wdh. anpeilen' };
 }
 
@@ -955,7 +1034,12 @@ function renderExCard(wex, xi) {
     if (!s.warmup) wNum++;
     const label = s.warmup ? 'W' : String(wNum);
     const an = !!auswahl && auswahl.has(si);
-    const dis = (done || auswahl) ? ' disabled' : '';
+    /* Abgehakte Sätze bleiben bearbeitbar — ein Vertipper muss korrigierbar
+       sein, ohne den Satz zu löschen und neu anzulegen. Auch der Haken selbst
+       bleibt aktiv: `checkSet()` kann Sätze längst wieder aufmachen, der Pfad
+       war über die UI nur nicht erreichbar, weil der Button disabled war.
+       Gesperrt wird nur im Auswahl-Modus, wo die Zeile eine Checkbox ist. */
+    const dis = auswahl ? ' disabled' : '';
     const ds = ' data-ex="' + xi + '" data-set="' + si + '"';
     const pop = (popSet === xi + '-' + si) ? ' pop' : '';
     h += '<div class="set-row' + (done ? ' done' : '') + (si === naechst && !done && !auswahl ? ' next' : '') +
@@ -1058,8 +1142,14 @@ function normalizeTplExercise(it) {
     it.sets = it.sets.map(s => {
       const reps = (s && s.reps > 0) ? Math.round(s.reps) : null;
       const kg = (s && s.kg > 0) ? Math.round(s.kg * 100) / 100 : null;
-      if (s && s.warmup) return { warmup: true, kg: (kg != null ? kg : 0), reps };
-      return (kg != null) ? { reps, kg } : { reps };
+      /* Pausenziel je Satz (optional). Nicht zu verwechseln mit dem restSec am
+         Trainingssatz — das ist die GEMESSENE Pause. Hier ist es die Vorgabe. */
+      const rest = (s && s.restSec > 0) ? Math.round(s.restSec) : null;
+      const o = (s && s.warmup)
+        ? { warmup: true, kg: (kg != null ? kg : 0), reps }
+        : ((kg != null) ? { reps, kg } : { reps });
+      if (rest != null) o.restSec = rest;
+      return o;
     });
   } else {
     const n = Math.max(1, Math.min(20, parseInt(it.sets, 10) || 3));
@@ -1072,6 +1162,55 @@ function normalizeTplExercise(it) {
   return it;
 }
 
+/* Vorgabewerte für einen Arbeitssatz: Plan-Ziel (z) gegen den entsprechenden
+   Satz der letzten Einheit (ref).
+
+   Kernregel: Die Vorgabe darf NIE unter dem liegen, was zuletzt schon stand.
+   Sonst sieht ein Rückschritt wie ein Plansoll aus — Plan 8/8/5, letztes Mal
+   8/8/6 gemacht, im Feld stünde wieder 5. Wer dann 6 schafft, hält das für
+   Fortschritt, obwohl es exakt der Vorwoche entspricht. Das Plan-Ziel ist eine
+   Untergrenze, kein Deckel.
+
+   Wiederholungen werden nur übernommen, wenn sie bei mindestens demselben
+   Gewicht zustande kamen: mehr Wdh. bei weniger Last sind kein Fortschritt und
+   als Vorgabe für ein schwereres Gewicht schlicht falsch. */
+function satzVorgabe(z, ref) {
+  let kg = z.kg != null ? z.kg : (ref ? ref.kg : null);
+  if (z.kg != null && ref && ref.kg != null && ref.kg > z.kg) kg = ref.kg;
+  let reps = z.reps != null ? z.reps : (ref ? ref.reps : null);
+  if (z.reps != null && ref && ref.reps != null && ref.reps > z.reps) {
+    const gleicheLast = (ref.kg == null && kg == null) ||
+      (ref.kg != null && kg != null && ref.kg >= kg);
+    if (gleicheLast) reps = ref.reps;
+  }
+  return { kg, reps };
+}
+
+/* Coach-Vorschlag auf die offenen Arbeitssätze schreiben.
+
+   Das Gewicht gilt allen Sätzen — das Wiederholungsziel aber nur dem
+   TOP-SATZ. Seit dem Coach-Umbau ist der Wiederholungsabfall über die Sätze
+   eine eigene Achse: „62,5 kg × 6 Wdh." heißt „6 im ersten Satz", nicht
+   „6 in jedem Satz". Vorher wurde das Ziel in alle Sätze geschrieben, was aus
+   einer Vorbelegung 8/8/6 bei einem Halte-Vorschlag ein 5/5/5 machen konnte —
+   also genau der Rückschritt, den die Vorbelegung gerade verhindern soll.
+
+   Die hinteren Sätze behalten deshalb ihre Vorbelegung, gedeckelt auf das
+   Ziel: kein späterer Satz darf über dem ersten stehen (bei gleicher Last ist
+   das physiologisch unplausibel), aber niedriger darf er sein. Leere Felder
+   bekommen das Ziel als Startwert. */
+function vorschlagAufSaetze(sets, kg, reps) {
+  let erster = true;
+  sets.forEach(s => {
+    if (s.done === true || s.warmup) return;
+    s.kg = kg;
+    if (!reps) return;
+    if (erster) { s.reps = reps; erster = false; }
+    else if (s.reps == null || s.reps > reps) s.reps = reps;
+  });
+  return sets;
+}
+
 /* --- Workout-State-Machine --- */
 /* tplSets: Liste von { reps } (aus Vorlage) ODER eine Zahl (freies Training / Übung nachträglich). */
 function buildWoExercise(exId, tplSets, restSec) {
@@ -1082,16 +1221,21 @@ function buildWoExercise(exId, tplSets, restSec) {
   const lastWs = last ? workingSets(last.wex) : [];
   const repWerte = ziele.filter(z => !z.warmup).map(z => z.reps).filter(r => r != null);
   let wi = 0; // Zeiger auf die Arbeitssätze der letzten Einheit (Aufwärmsätze überspringen)
+  /* restZiel = Pausen-VORGABE aus dem Plan. Bewusst ein eigenes Feld:
+     `restSec` am Trainingssatz ist die GEMESSENE Pause und wird beim Abhaken
+     überschrieben — läge beides auf demselben Feld, wäre die Einstellung nach
+     dem ersten Satz weg. */
   const sets = ziele.map(z => {
+    const ziel = (z.restSec > 0) ? Math.round(z.restSec) : null;
     if (z.warmup) {
-      return { kg: z.kg != null ? z.kg : null, reps: z.reps != null ? z.reps : null, rpe: null, warmup: true, done: false, doneAt: null, restSec: null };
+      return { kg: z.kg != null ? z.kg : null, reps: z.reps != null ? z.reps : null, rpe: null, warmup: true, done: false, doneAt: null, restSec: null, restZiel: ziel };
     }
     const ref = lastWs[wi] || lastWs[lastWs.length - 1] || null;
     wi++;
+    const v = satzVorgabe(z, ref);
     return {
-      kg: z.kg != null ? z.kg : (ref ? ref.kg : null),   // geplantes Gewicht schlägt „letztes Mal"
-      reps: z.reps != null ? z.reps : (ref ? ref.reps : null),
-      rpe: null, warmup: false, done: false, doneAt: null, restSec: null
+      kg: v.kg, reps: v.reps,
+      rpe: null, warmup: false, done: false, doneAt: null, restSec: null, restZiel: ziel
     };
   });
   return {
@@ -1191,14 +1335,16 @@ function checkSet(xi, si) {
     /* Erst die Meldung lesbar, dann die Feier — nicht beides auf einmal */
     setTimeout(burstConfetti, 120);
   }
-  /* Pause starten — außer nach einem Aufwärmsatz. Zwischen den Rampensätzen pausiert
-     man kurz nach Gefühl; ein Timer mit vollem Pausenziel würde hier nur den Gong
-     ein halbes Dutzend Mal pro Übung auslösen. Wer doch eine will: „Pause starten"
-     in der Timer-Leiste. */
-  if (s.warmup) {
+  /* Pause starten — was dieser Satz vorgibt, entscheidet restZielFuerSatz():
+     eigenes Pausenziel, sonst Übungs-/Coach-Wert, bei Aufwärmsätzen nur beim
+     letzten des Blocks. Gibt es kein Ziel (Rampensatz mitten im Aufwärmen),
+     läuft bewusst kein Timer — wer doch einen will: „Pause starten" in der
+     Timer-Leiste. */
+  const zielSec = restZielFuerSatz(wex, si);
+  if (zielSec == null) {
     if (aw.rest) { aw.rest = null; pauseWachEnde(); }   // laufende Pause samt Weckruf beenden
   } else {
-    aw.rest = { startedAt: now, targetSec: restTarget(wex.exId, wex.restSec), exIdx: xi, setIdx: si, signaled: false, manuell: false };
+    aw.rest = { startedAt: now, targetSec: zielSec, exIdx: xi, setIdx: si, signaled: false, manuell: false };
     pauseWach();   // Wake Lock (Standard) bzw. stille Schleife (Opt-in "Signal bei gesperrtem Handy")
     pushPlanen(aw.rest.targetSec);   // Weckruf über den Worker (falls Pausen-Push aktiv)
   }
@@ -1422,9 +1568,16 @@ function tplStrukturUpdate(tpl, w) {
     return {
       exId: wex.exId,
       restSec: alt ? alt.restSec : null,
-      sets: wex.sets.map(s => s.warmup
-        ? { warmup: true, kg: s.kg != null ? s.kg : 0, reps: s.reps }
-        : { reps: s.reps })
+      /* Das Pausenziel je Satz muss mitwandern — sonst löscht ein Plan-Abgleich
+         nach dem Training genau die Werte, die man vorher eingestellt hat.
+         Quelle ist restZiel (die Vorgabe), nicht restSec (die gemessene Pause). */
+      sets: wex.sets.map(s => {
+        const o = s.warmup
+          ? { warmup: true, kg: s.kg != null ? s.kg : 0, reps: s.reps }
+          : { reps: s.reps };
+        if (s.restZiel > 0) o.restSec = Math.round(s.restZiel);
+        return o;
+      })
     };
   });
 }
@@ -1676,6 +1829,9 @@ function renderTplEditor() {
         '<input class="num-input tpl-set-kg" inputmode="decimal" autocomplete="off" placeholder="' + (warm ? 'kg' : 'auto') + '" value="' + (st.kg != null ? fmtInput(st.kg) : '') + '" data-trole="kg"' + dij + '>' +
         '<span class="tpl-set-unit">kg ×</span>' +
         '<input class="num-input tpl-set-reps" inputmode="numeric" autocomplete="off" placeholder="Wdh" value="' + (st.reps != null ? st.reps : '') + '" data-trole="reps"' + dij + '>' +
+        '<span class="tpl-set-unit tpl-set-pause">P</span>' +
+        '<input class="num-input tpl-set-rest" inputmode="numeric" autocomplete="off" placeholder="' + (warm ? '–' : 'auto') + '" value="' + (st.restSec != null ? st.restSec : '') + '" data-trole="setrest"' + dij + ' aria-label="Pause nach diesem Satz in Sekunden">' +
+        '<span class="tpl-set-unit">s</span>' +
         '<button class="del-btn" style="width:34px;height:34px;margin-left:auto" data-action="tpl-set-del"' + dij + '>×</button></div>';
     });
     h += '<div class="tpl-ex-foot">' +
@@ -3283,8 +3439,24 @@ const ACTIONS = {
     const xi = +el.dataset.ex, si = +el.dataset.set;
     const wex = aw.exercises[xi];
     const s = wex.sets[si];
+    /* Was ohne eigene Vorgabe passieren würde — damit „auto" nicht raten lässt. */
+    const autoSec = (function () {
+      const merk = s.restZiel;
+      s.restZiel = null;
+      const v = restZielFuerSatz(wex, si);
+      s.restZiel = merk;
+      return v;
+    })();
     openSheet('<div class="sheet-title">' + esc(exById(wex.exId).name) + '</div>' +
       '<div class="sheet-sub">Satz ' + (si + 1) + (s.warmup ? ' (Aufwärmsatz)' : '') + '</div>' +
+      '<div class="sheet-row-rest"><span>Pause danach</span>' +
+      '<input class="num-input" inputmode="numeric" autocomplete="off" placeholder="' +
+      (autoSec == null ? 'kein Timer' : 'auto (' + fmtMinSek(autoSec) + ')') + '" value="' +
+      (s.restZiel != null ? s.restZiel : '') + '" data-setrest data-ex="' + xi + '" data-set="' + si + '" aria-label="Pause nach diesem Satz in Sekunden"><span>s</span></div>' +
+      '<div class="mini-note">Leer = ' + (autoSec == null
+        ? 'kein Timer (Rampensatz mitten im Aufwärmen).'
+        : fmtMinSek(autoSec) + ' min aus ' + (s.warmup ? 'der Übung — letzter Aufwärmsatz vor dem ersten Arbeitssatz.' : 'Plan bzw. Coach.')) +
+      ' Dauerhaft änderst du das in der Vorlage.</div>' +
       '<div class="sheet-actions">' +
       '<button class="btn" data-action="set-warmup" data-ex="' + xi + '" data-set="' + si + '">' +
       (s.warmup ? 'Als Arbeitssatz markieren' : 'Als Aufwärmsatz markieren') + '</button>' +
@@ -3297,6 +3469,9 @@ const ACTIONS = {
     if (!aw) return;
     const s = aw.exercises[+el.dataset.ex].sets[+el.dataset.set];
     s.warmup = !s.warmup;
+    /* Aufwärmsätze zählen nicht für PRs — der Wechsel kann die PR-Lage der
+       ganzen Übung verschieben, in beide Richtungen. */
+    if (s.done === true) prNeuBerechnen(+el.dataset.ex);
     save();
     closeSheet();
     render();
@@ -3377,12 +3552,7 @@ const ACTIONS = {
     const kg = parseNum(el.dataset.kg);
     if (kg == null) return;
     const reps = el.dataset.reps ? parseInt(el.dataset.reps, 10) : null;
-    S.activeWorkout.exercises[+el.dataset.ex].sets.forEach(s => {
-      if (s.done !== true && !s.warmup) {
-        s.kg = kg;
-        if (reps) s.reps = reps;
-      }
-    });
+    vorschlagAufSaetze(S.activeWorkout.exercises[+el.dataset.ex].sets, kg, reps);
     save();
     render();
     showToast('Vorschlag übernommen');
@@ -3486,8 +3656,13 @@ const ACTIONS = {
       if (neuId === altId) { showToast('Das ist dieselbe Übung'); return; }
       const offen = alt.sets.filter(s => s.done !== true);
       const fertig = alt.sets.filter(s => s.done === true);
+      /* Eingestellte Pausenziele wandern mit in die Ersatzübung — sie gehören
+         zur Satzstruktur, nicht zur Übung. Der „auto"-Wert dahinter richtet
+         sich danach nach der Muskelgruppe der NEUEN Übung. */
       const ziele = offen.length
-        ? offen.map(s => s.warmup ? { warmup: true, reps: s.reps, kg: null } : { reps: s.reps })
+        ? offen.map(s => Object.assign(
+            s.warmup ? { warmup: true, reps: s.reps, kg: null } : { reps: s.reps },
+            s.restZiel > 0 ? { restSec: Math.round(s.restZiel) } : null))
         : [{ reps: null }, { reps: null }, { reps: null }];
       const neu = buildWoExercise(neuId, ziele, alt.restSec);
       neu.ersetztFuer = alt.ersetztFuer || altId;
@@ -4080,6 +4255,22 @@ document.addEventListener('input', e => {
     if (v != null && v < 0) v = 0;
     if (el.dataset.winput === 'reps' && v != null) v = Math.round(v);
     s[el.dataset.winput] = v;
+    /* Korrektur an einem bereits abgehakten Satz: PR-Lage neu bewerten.
+       Bewusst ohne render() — das würde beim Tippen den Fokus aus dem Feld
+       reißen. Der State stimmt sofort, die Abzeichen zieht der change-Handler
+       beim Verlassen des Feldes nach. */
+    if (s.done === true) prNeuBerechnen(+el.dataset.ex);
+    saveSoon();
+    return;
+  }
+  /* Pausenziel eines Satzes im laufenden Training (Satz-Optionen-Sheet).
+     Gilt nur für heute — dauerhaft wird das in der Vorlage gesetzt. */
+  if (el.hasAttribute && el.hasAttribute('data-setrest')) {
+    const aw = S.activeWorkout;
+    if (!aw) return;
+    const s = aw.exercises[+el.dataset.ex].sets[+el.dataset.set];
+    const v = parseNum(el.value);
+    s.restZiel = (v != null && v > 0) ? Math.round(v) : null;
     saveSoon();
     return;
   }
@@ -4094,6 +4285,11 @@ document.addEventListener('input', e => {
       it.sets[+el.dataset.j].reps = (v != null && v > 0) ? Math.round(v) : null;
     } else if (el.dataset.trole === 'kg') {
       it.sets[+el.dataset.j].kg = (v != null && v >= 0) ? v : null;
+    } else if (el.dataset.trole === 'setrest') {
+      /* Pausenziel dieses Satzes; leer = „auto" (Übungs- bzw. Coach-Wert) */
+      const st = it.sets[+el.dataset.j];
+      if (v != null && v > 0) st.restSec = Math.round(v);
+      else delete st.restSec;
     }
     return;
   }
@@ -4165,6 +4361,17 @@ document.addEventListener('input', e => {
 
 document.addEventListener('change', e => {
   const el = e.target;
+  /* Feld eines abgehakten Satzes verlassen: PR-Abzeichen nachziehen.
+     Muss VOR dem Einstellungs-Zweig stehen — Workout-Felder tragen ebenfalls
+     ein `data-set` (den Satz-Index), das dort sonst als Einstellungs-Schlüssel
+     gelesen würde. */
+  if (el.dataset.winput) {
+    const aw = S.activeWorkout;
+    if (!aw) return;
+    const s = aw.exercises[+el.dataset.ex].sets[+el.dataset.set];
+    if (s.done === true) { save(); render(); }
+    return;
+  }
   /* RPE im aktiven Workout */
   if (el.dataset.wsel === 'rpe') {
     const aw = S.activeWorkout;
