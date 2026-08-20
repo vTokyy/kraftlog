@@ -9,6 +9,8 @@
  *                        restSec = GEMESSENE Pause, restZiel = eingestellte Vorgabe
  *   activeWorkout:   wie workout, Sätze zusätzlich mit done:true/false; rest = laufende Pause
  *   bodyweight:      [ { date:'YYYY-MM-DD', kg } ]
+ *   reha:            { <Muskelgruppe>: { aktiv, seit, stufe, stufeSeit, basis } }
+ *   rehaLog:         [ { ts, mg, typ:'uebung'|'morgen', wert:0–10, exId, workoutId } ]
  * PRs werden nie gespeichert, immer aus der Historie berechnet.
  */
 (function () {
@@ -76,7 +78,10 @@ function defaults() {
     workouts: [],
     runs: [],
     activeWorkout: null,
-    bodyweight: []
+    bodyweight: [],
+    reha: {},        // Reha-Modus je Muskelgruppe — aus, bis er eingeschaltet wird
+    rehaLog: [],     // Schmerz- und Morgen-Rückmeldungen
+    rehaInit: false  // Erstbelegung (Beine) schon gelaufen?
   };
 }
 /* Typen absichern: kaputte/fremde Importe dürfen die App nie unbenutzbar machen */
@@ -90,6 +95,21 @@ function sanitizeState(s) {
   if (!s.exerciseSettings || typeof s.exerciseSettings !== 'object' || Array.isArray(s.exerciseSettings)) s.exerciseSettings = d.exerciseSettings;
   if (!s.wochenplan || typeof s.wochenplan !== 'object' || Array.isArray(s.wochenplan)) s.wochenplan = d.wochenplan;
   if (!s.settings || typeof s.settings !== 'object') s.settings = d.settings;
+  /* Reha-Zustand absichern: fremde/alte Importe kennen ihn nicht, und ein
+     kaputter Eintrag darf die Empfehlung nicht in undefinierte Stufen schicken. */
+  if (!s.reha || typeof s.reha !== 'object' || Array.isArray(s.reha)) s.reha = {};
+  Object.keys(s.reha).forEach(mg => {
+    const r = s.reha[mg];
+    if (!r || typeof r !== 'object') { delete s.reha[mg]; return; }
+    r.aktiv = r.aktiv === true;
+    r.stufe = Math.min(4, Math.max(1, Math.round(+r.stufe || 2)));
+    r.basis = Math.min(10, Math.max(0, Math.round(+r.basis || 0)));
+    if (typeof r.seit !== 'number') r.seit = Date.now();
+    if (typeof r.stufeSeit !== 'number') r.stufeSeit = r.seit;
+  });
+  if (!Array.isArray(s.rehaLog)) s.rehaLog = [];
+  s.rehaLog = s.rehaLog.filter(e => e && typeof e.ts === 'number' && e.mg &&
+    (e.typ === 'uebung' || e.typ === 'morgen') && typeof e.wert === 'number');
   s.settings.strava = (s.settings.strava && typeof s.settings.strava === 'object')
     ? Object.assign({}, d.settings.strava, s.settings.strava)
     : d.settings.strava;
@@ -138,6 +158,17 @@ function migrate(s) {
     /* künftige Versionen: case 1 → 2 usw., Fall-through */
   }
   s.schemaVersion = SCHEMA_VERSION;
+  /* Einmalige Erstbelegung des Reha-Modus: Der Oberschenkel startet nach der
+     Knieverletzung in Stufe 2 („Aufbau"), alles andere bleibt aus. Läuft genau
+     einmal — wer die Gruppe danach abschaltet, bekommt sie nicht zurück. */
+  if (!s.rehaInit) {
+    s.rehaInit = true;
+    if (!s.reha) s.reha = {};
+    if (!s.reha['Beine']) {
+      const jetzt = Date.now();
+      s.reha['Beine'] = { aktiv: true, seit: jetzt, stufe: 2, stufeSeit: jetzt, basis: 0 };
+    }
+  }
   return s;
 }
 function load() {
@@ -439,6 +470,25 @@ function progressionFor(exId, repMin, repMax) {
   repMax = repMax || (coachAn ? k.repMax : 12);
   const sess = sessionsFor(exId);
   if (!sess.length) {
+    const rh = coachAn ? rehaExAktiv(ex) : null;
+    if (rh) {
+      const st = Coach.rehaStufe(rehaWerte(ex.mg).stufe);
+      const rMin = st.repMin != null ? st.repMin : repMin;
+      const rMax = st.repMax != null ? st.repMax : repMax;
+      return {
+        typ: 'neu', reha: { stufe: st.nr, stufeName: st.name, ampel: 'unbekannt' },
+        text: 'Erstes Mal — vorsichtiges Gewicht für ' + repRangeText(rMin, rMax) + ' finden',
+        grund: 'Reha-Modus, Stufe ' + st.nr + ' („' + st.name + '"). ' + st.ziel + ' ' + st.erklaerung +
+               ' Nimm für die erste Einheit ein Gewicht, bei dem ' + rMax + ' Wiederholungen im Tempo 3 s hoch / 3 s runter ' +
+               'klar machbar sind — die erste Einheit ist eine Messung, kein Test. Gesteigert wird ab der nächsten, ' +
+               'und nur wenn Schmerz und Morgen-Check es hergeben.',
+        hinweis: [
+          ['Tempo', '3 s hoch, 3 s runter. Die Sehne reagiert auf hohe Spannung über Zeit, nicht auf Schwung (Kongsgaard et al. 2009).'],
+          ['Isometrie', st.isometrie],
+          ['Danach', 'Schmerzwert 0–10 eintragen — und morgen früh den Morgen-Check.']
+        ]
+      };
+    }
     return {
       typ: 'neu', text: 'Erstes Mal — Arbeitsgewicht für ' + repRangeText(repMin, repMax) + ' finden',
       grund: coachAn ? ('Kategorie: ' + k.label + '. Empfohlener Zielbereich: ' + k.repMin + '–' + k.repMax + ' Wdh., Satzpause ~' + fmtMinSek(Coach.pauseFuer(ex)) + ' min. Wähle ein Gewicht, mit dem du das untere Ziel technisch sauber schaffst — gesteigert wird ab der nächsten Einheit automatisch.') : null
@@ -446,6 +496,13 @@ function progressionFor(exId, repMin, repMax) {
   }
   const ws = workingSets(sess[sess.length - 1].wex);
   const wsDavor = sess.length > 1 ? workingSets(sess[sess.length - 2].wex) : null;
+  /* Reha-Modus hat Vorrang vor dem normalen Coach: Er baut auf dessen Bewertung
+     auf, kann sie aber nur bremsen — die Steigerung braucht zusätzlich eine
+     grüne Ampel aus Schmerz und Morgen-Check. Läuft für die Muskelgruppe kein
+     Reha-Modus (z. B. Waden), passiert hier gar nichts. */
+  if (coachAn && rehaExAktiv(ex)) {
+    return Coach.rehaEmpfehlung(ex, ws, wsDavor, repMin, repMax, rehaWerte(ex.mg));
+  }
   if (coachAn) return Coach.empfehlung(ex, ws, wsDavor, repMin, repMax);
   /* Klassik-Modus (Coach aus): eigene Steigerungsschritte aus den Einstellungen,
      aber dieselbe Bewertungslogik wie im Coach. „Klassik" heißt hier: du legst
@@ -499,6 +556,266 @@ function progressionFor(exId, repMin, repMax) {
   }
   const zielReps = Math.min(topReps + 1, repMax);
   return { typ: 'wdh', kg: topKg, reps: zielReps, text: fmtKg(topKg) + ' kg × ' + zielReps + ' Wdh. anpeilen' };
+}
+
+/* ---------- Reha-Modus ----------
+ * Zustand:
+ *   S.reha    = { <Muskelgruppe>: { aktiv, seit, stufe, stufeSeit, basis } }
+ *   S.rehaLog = [ { ts, mg, typ:'uebung'|'morgen', wert:0–10, exId, workoutId } ]
+ *
+ * Zwei Rückmeldungen tragen den Modus, und beide sind zwei Taps groß:
+ *   1. Schmerz 0–10 direkt nach der Übung
+ *   2. Zustand am nächsten Morgen (der wichtigere Wert — Sehnengewebe reagiert
+ *      verzögert, die Überlastung von heute zeigt sich morgen früh)
+ * `basis` ist der persönliche Ausgangswert am Morgen, gegen den der Morgen-Check
+ * verrechnet wird. Wer morgens generell mit 2/10 aufwacht, hat bei 2/10 keinen
+ * Anstieg — die Regel aus Silbernagel et al. 2007 fragt nach der VERÄNDERUNG.
+ */
+function rehaFuer(mg) {
+  const r = S.reha && S.reha[mg];
+  return (r && r.aktiv) ? r : null;
+}
+function rehaAktiveGruppen() {
+  return MGS.filter(mg => rehaFuer(mg));
+}
+function rehaExAktiv(ex) { return ex ? rehaFuer(ex.mg) : null; }
+
+/* Tagesweise Zusammenfassung: pro Trainingstag der SCHLECHTESTE Schmerzwert und
+   der Morgen-Check des Folgetages. Der schlechteste Wert führt, weil eine
+   einzige überlastende Übung reicht — der Durchschnitt würde sie wegmitteln. */
+function rehaSessions(mg) {
+  const cfg = (S.reha && S.reha[mg]) || {};
+  const basis = cfg.basis || 0;
+  const uebung = {}, morgen = {};
+  (S.rehaLog || []).forEach(e => {
+    if (e.mg !== mg || e.wert == null) return;
+    const d = todayStr(new Date(e.ts));
+    if (e.typ === 'morgen') morgen[d] = e.wert;
+    else uebung[d] = Math.max(uebung[d] == null ? -1 : uebung[d], e.wert);
+  });
+  return Object.keys(uebung).sort().map(d => {
+    const naechsterTag = todayStr(new Date(new Date(d + 'T12:00').getTime() + TAG_MS));
+    const m = morgen[naechsterTag];
+    return {
+      datum: d, ts: new Date(d + 'T12:00').getTime(),
+      schmerz: uebung[d],
+      morgen: m == null ? null : m,
+      morgenDelta: m == null ? null : m - basis
+    };
+  });
+}
+
+/* Alles, was der Coach für eine Empfehlung braucht — plus das, was die Oberfläche
+   anzeigt. Die grüne Serie zählt nur Einheiten, deren Morgen-Check vorliegt:
+   eine Einheit ohne Nachkontrolle ist kein Beleg für gute Verträglichkeit. */
+function rehaWerte(mg) {
+  const cfg = (S.reha && S.reha[mg]) || {};
+  const sess = rehaSessions(mg);
+  const letzte = sess.length ? sess[sess.length - 1] : null;
+  let gruen = 0;
+  for (let i = sess.length - 1; i >= 0; i--) {
+    const s = sess[i];
+    if (s.morgenDelta == null) break;
+    if (Coach.rehaAmpel(s.schmerz, s.morgenDelta).farbe !== 'gruen') break;
+    gruen++;
+  }
+  const stufeSeit = cfg.stufeSeit || cfg.seit || Date.now();
+  return {
+    stufe: cfg.stufe || 2,
+    schmerz: letzte ? letzte.schmerz : null,
+    morgenDelta: letzte ? letzte.morgenDelta : null,
+    letzte, sessions: sess,
+    gruenSerie: gruen,
+    tageInStufe: Math.floor((Date.now() - stufeSeit) / TAG_MS)
+  };
+}
+
+/* Sehnen-Belastungszeit der laufenden Woche über alle Übungen dieser Gruppe —
+   inklusive der Sätze, die im aktiven Training schon abgehakt sind. */
+function rehaTutWocheSek(mg) {
+  const ab = weekStartMs(0);
+  let sek = 0;
+  const zaehle = (w) => {
+    (w.exercises || []).forEach(wex => {
+      const ex = exById(wex.exId);
+      if (!ex || ex.mg !== mg) return;
+      sek += Coach.rehaTut(workingSets(wex));
+    });
+  };
+  S.workouts.filter(w => w.startedAt >= ab).forEach(zaehle);
+  if (S.activeWorkout && S.activeWorkout.startedAt >= ab) zaehle(S.activeWorkout);
+  return sek;
+}
+
+/* Steht heute ein Morgen-Check aus? Nur wenn gestern trainiert wurde und für
+   heute noch nichts eingetragen ist. Trainiert man zwei Tage hintereinander,
+   fragt der Check trotzdem nur einmal pro Tag. */
+function rehaMorgenOffen() {
+  const heute = todayStr();
+  const gestern = todayStr(new Date(Date.now() - TAG_MS));
+  return rehaAktiveGruppen().filter(mg => {
+    const sess = rehaSessions(mg);
+    if (!sess.some(s => s.datum === gestern)) return false;
+    return !(S.rehaLog || []).some(e =>
+      e.mg === mg && e.typ === 'morgen' && todayStr(new Date(e.ts)) === heute);
+  });
+}
+
+function rehaEintragen(mg, typ, wert, exId) {
+  if (!S.rehaLog) S.rehaLog = [];
+  const heute = todayStr();
+  /* Pro Tag genau ein Morgen-Wert und pro Tag/Übung ein Trainingswert —
+     Korrigieren muss möglich sein, ohne dass sich Einträge stapeln. */
+  S.rehaLog = S.rehaLog.filter(e => !(
+    e.mg === mg && e.typ === typ && todayStr(new Date(e.ts)) === heute &&
+    (typ === 'morgen' || e.exId === exId)));
+  S.rehaLog.push({
+    ts: Date.now(), mg, typ, wert,
+    exId: exId || null,
+    workoutId: S.activeWorkout ? S.activeWorkout.id : null
+  });
+  /* Der Log wächst pro Training um wenige Einträge; ein Jahr bleibt problemlos
+     erhalten. Älteres fliegt raus, damit der Export nicht zumüllt. */
+  const grenze = Date.now() - 400 * TAG_MS;
+  S.rehaLog = S.rehaLog.filter(e => e.ts >= grenze);
+  save();
+}
+
+/* Wurde für diese Übung heute schon ein Schmerzwert eingetragen? */
+function rehaHeuteWert(mg, exId) {
+  const heute = todayStr();
+  const e = (S.rehaLog || []).find(x =>
+    x.mg === mg && x.typ === 'uebung' && x.exId === exId && todayStr(new Date(x.ts)) === heute);
+  return e ? e.wert : null;
+}
+
+/* ---- Sheets: Schmerz nach der Übung, Morgen-Check ---- */
+function rehaSkalaHtml(action, mg, exId, aktiv, beschriftung) {
+  let h = '<div class="reha-skala">';
+  for (let i = 0; i <= 10; i++) {
+    const cls = i <= Coach.REHA_SCHMERZ_OK ? 'gruen' : (i <= Coach.REHA_SCHMERZ_MAX ? 'gelb' : 'rot');
+    h += '<button class="reha-punkt ' + cls + (aktiv === i ? ' on' : '') + '" data-action="' + action +
+      '" data-mg="' + esc(mg) + '"' + (exId ? ' data-exid="' + esc(exId) + '"' : '') +
+      ' data-wert="' + i + '" aria-label="' + i + ' von 10">' + i + '</button>';
+  }
+  h += '</div><div class="reha-skala-legende"><span>' + esc(beschriftung[0]) + '</span><span>' + esc(beschriftung[1]) + '</span></div>';
+  return h;
+}
+function rehaSchmerzSheet(mg, exId) {
+  const ex = exId ? exById(exId) : null;
+  const aktiv = rehaHeuteWert(mg, exId);
+  return openSheet(
+    '<div class="sheet-title">Wie war das Knie?</div>' +
+    '<div class="sheet-sub">' + (ex ? esc(ex.name) + ' — s' : 'S') + 'tärkster Schmerz während und direkt nach der Übung.</div>' +
+    rehaSkalaHtml('reha-schmerz-set', mg, exId, aktiv, ['0 — nichts gespürt', '10 — maximal']) +
+    '<div class="info-box">Bis <b>' + Coach.REHA_SCHMERZ_OK + '/10</b> wird weiter gesteigert. ' +
+    'Bis <b>' + Coach.REHA_SCHMERZ_MAX + '/10</b> ist die Belastung erlaubt, aber ohne Steigerung — ' +
+    'Training mit Schmerz in diesem Bereich schadet nicht und schlägt Schonung sogar deutlich (Silbernagel et al. 2007). ' +
+    'Darüber war die Last zu hoch.</div>' +
+    '<div class="sheet-actions"><button class="btn" data-action="sheet-close">Später</button></div>');
+}
+function rehaMorgenSheet(mg) {
+  const cfg = (S.reha && S.reha[mg]) || {};
+  const sess = rehaSessions(mg);
+  const letzte = sess.length ? sess[sess.length - 1] : null;
+  return openSheet(
+    '<div class="sheet-title">Morgen-Check — ' + esc(mg) + '</div>' +
+    '<div class="sheet-sub">Wie fühlt es sich <b>jetzt</b> an, nach dem Training von gestern' +
+    (letzte ? ' (Schmerz damals ' + letzte.schmerz + '/10)' : '') + '?</div>' +
+    rehaSkalaHtml('reha-morgen-set', mg, null, null, ['0 — wie immer', '10 — maximal']) +
+    '<div class="info-box">Dein Ausgangswert steht auf <b>' + (cfg.basis || 0) + '/10</b> — verglichen wird die Veränderung dagegen. ' +
+    'Bis +1 Punkt ist normal, ab <b>+2</b> war die gestrige Belastung zu hoch und der Coach nimmt die Last zurück. ' +
+    'Dieser Wert am Morgen danach ist das schärfere der beiden Signale: Sehnengewebe reagiert verzögert.</div>' +
+    '<div class="sheet-actions"><button class="btn" data-action="sheet-close">Später</button></div>');
+}
+
+/* ---- Übersichtskarte je Muskelgruppe (Einstellungen) ---- */
+function rehaDetailHtml(mg) {
+  const cfg = S.reha[mg];
+  const w = rehaWerte(mg);
+  const st = Coach.rehaStufe(w.stufe);
+  const ampel = Coach.rehaAmpel(w.schmerz, w.morgenDelta);
+  const check = Coach.rehaStufenCheck(w.stufe, w.tageInStufe, w.gruenSerie);
+  const tut = Coach.rehaTutWoche(rehaTutWocheSek(mg));
+  let h = '<div class="sheet-title">Reha — ' + esc(mg) + '</div>';
+  h += '<div class="card reha-karte">' +
+    '<div class="reha-kopf"><span class="reha-ampel ' + ampel.farbe + '"></span>' +
+    '<div><div class="li-title li-title-sm">Stufe ' + st.nr + ' — ' + esc(st.name) + '</div>' +
+    '<div class="li-sub li-sub-wrap">' + esc(st.kurz) + '</div></div></div>' +
+    '<div class="mini-note">' + esc(ampel.text) + ' · seit ' + w.tageInStufe + ' ' + (w.tageInStufe === 1 ? 'Tag' : 'Tagen') +
+    ' in dieser Stufe · ' + w.gruenSerie + ' ' + (w.gruenSerie === 1 ? 'Einheit' : 'Einheiten') + ' in Folge grün</div>' +
+    '<div class="mini-note">Sehnen-Belastungszeit diese Woche: <b>' + esc(tut.text) + '</b></div>' +
+    '</div>';
+  h += '<div class="info-box">' + esc(st.ziel) + ' ' + esc(st.erklaerung) + '</div>';
+  h += '<div class="info-box"><b>Isometrie:</b> ' + esc(st.isometrie) + '</div>';
+  h += '<div class="info-box"><b>Sehnen-Belastungszeit:</b> ' + esc(tut.grund) + '</div>';
+  /* Stufenwechsel */
+  if (check.kann) {
+    h += '<div class="card"><div class="li-sub li-sub-wrap">' + esc(check.grund) + '</div>' +
+      '<button class="btn btn-block btn-primary mt-m" data-action="reha-stufe-vor" data-mg="' + esc(mg) + '">Weiter zu Stufe ' + check.naechste + '</button></div>';
+  } else {
+    h += '<div class="mini-note">' + esc(check.grund) + '</div>';
+  }
+  h += '<div class="section-title">Von Hand einstellen</div>';
+  h += settingRow('Stufe', 'Normalerweise schlägt der Coach den Wechsel selbst vor',
+    '<select data-rehasel="stufe" data-mg="' + esc(mg) + '">' +
+    [1, 2, 3, 4].map(n => '<option value="' + n + '"' + (w.stufe === n ? ' selected' : '') + '>' +
+      n + ' — ' + Coach.rehaStufe(n).name + '</option>').join('') + '</select>');
+  h += settingRow('Ausgangswert morgens', 'Dein normaler Wert ohne Training (0–10). Der Morgen-Check misst die Abweichung davon.',
+    '<select data-rehasel="basis" data-mg="' + esc(mg) + '">' +
+    [0, 1, 2, 3, 4, 5].map(n => '<option value="' + n + '"' + ((cfg.basis || 0) === n ? ' selected' : '') + '>' + n + '</option>').join('') + '</select>');
+  h += '<div class="row-2 mt-m">' +
+    '<button class="btn" data-action="reha-morgen" data-mg="' + esc(mg) + '">Morgen-Check eintragen</button>' +
+    '<button class="btn" data-action="reha-schmerz" data-mg="' + esc(mg) + '">Schmerz eintragen</button></div>';
+  /* Verlauf */
+  const letzte = w.sessions.slice(-10).reverse();
+  if (letzte.length) {
+    h += '<div class="section-title">Letzte Einheiten</div><div class="card diff-liste">';
+    letzte.forEach(s => {
+      const a = Coach.rehaAmpel(s.schmerz, s.morgenDelta);
+      h += '<div class="diff-zeile"><span class="reha-ampel ' + a.farbe + '"></span><span>' +
+        fmtDatumKurz(s.ts) + ' — Belastung ' + s.schmerz + '/10, Morgen danach ' +
+        (s.morgen == null ? 'kein Eintrag' : s.morgen + '/10 (' + (s.morgenDelta > 0 ? '+' : '') + s.morgenDelta + ')') +
+        '</span></div>';
+    });
+    h += '</div>';
+  }
+  h += '<div class="mini-note">' + esc(Coach.REHA_QUELLEN) + '</div>';
+  h += '<div class="sheet-actions"><button class="btn btn-danger" data-action="reha-aus" data-mg="' + esc(mg) + '">Reha-Modus für ' + esc(mg) + ' beenden</button>' +
+    '<button class="btn" data-action="sheet-close">Schließen</button></div>';
+  return openSheet(h);
+}
+
+/* ---- Abschnitt in den Einstellungen ----
+   Der Modus steht für JEDE Muskelgruppe bereit, ist aber überall aus, bis er
+   gebraucht wird. Eine aktive Gruppe zeigt Stufe und Ampel direkt in der Zeile —
+   sonst müsste man erst hineintippen, um zu sehen, ob der Coach gerade bremst. */
+function rehaEinstellungenHtml() {
+  const aktive = rehaAktiveGruppen();
+  let h = '<div class="section-title">Reha-Modus</div>';
+  h += '<div class="info-box">Für eine Muskelgruppe, die sich von einer Verletzung erholt: Der Coach steigert dann nur noch, ' +
+    'wenn <b>zwei</b> Dinge stimmen — deine Leistung <i>und</i> die Verträglichkeit (Schmerz während der Übung, Zustand am Morgen danach). ' +
+    'Die Schrittgröße ist auf 5 % gedeckelt, das Tempo auf 3 s hoch / 3 s runter, und die Wiederholungsziele kommen aus der Reha-Stufe. ' +
+    'Alle anderen Muskelgruppen laufen davon völlig unberührt weiter.</div>';
+  if (aktive.length) {
+    aktive.forEach(mg => {
+      const w = rehaWerte(mg);
+      const st = Coach.rehaStufe(w.stufe);
+      const a = Coach.rehaAmpel(w.schmerz, w.morgenDelta);
+      h += '<button class="li-item" data-action="reha-detail" data-mg="' + esc(mg) + '">' +
+        '<span class="reha-ampel ' + a.farbe + '"></span>' +
+        '<div class="li-main"><div class="li-title li-title-sm">' + esc(mg) + ' · Stufe ' + st.nr + ' — ' + esc(st.name) + '</div>' +
+        '<div class="li-sub li-sub-wrap">' + esc(a.text) + '</div></div><span class="chev">›</span></button>';
+    });
+  }
+  const offen = MGS.filter(mg => !rehaFuer(mg));
+  h += '<div class="reha-mg-wahl">';
+  offen.forEach(mg => {
+    h += '<button class="reha-mg-btn" data-action="reha-an" data-mg="' + esc(mg) + '">+ ' + esc(mg) + '</button>';
+  });
+  h += '</div>';
+  h += '<div class="mini-note">' + esc(Coach.REHA_QUELLEN) + '</div>';
+  return h;
 }
 
 /* ---------- Wochenstatistik (ISO-Woche, Montag-basiert) ---------- */
@@ -819,6 +1136,15 @@ function renderStart() {
 
   const heute = new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
   let h = '<h1 class="view-title">Workout starten<small>' + esc(heute) + '</small></h1>' + warnHtml();
+  /* Der Morgen-Check steht ganz oben und vor allem anderen: Er ist nur heute
+     früh etwas wert und geht sonst im Tagesablauf unter. */
+  rehaMorgenOffen().forEach(mg => {
+    h += '<button class="card reha-morgen-karte" data-action="reha-morgen" data-mg="' + esc(mg) + '">' +
+      '<div class="li-main"><div class="li-sub">Morgen-Check · ' + esc(mg) + '</div>' +
+      '<div class="li-title">Wie fühlt es sich heute an?</div>' +
+      '<div class="li-sub li-sub-wrap">Gestern trainiert — der Zustand am Morgen danach entscheidet, ob heute gesteigert wird.</div></div>' +
+      '<span class="reha-morgen-cta">Eintragen ›</span></button>';
+  });
   /* Goku begrüßt nur, wenn KEIN Training läuft (auch kein minimiertes) */
   if (!S.activeWorkout && S.settings.goku !== false) h += gokuKarte(gokuSpruchHome());
   /* Heutiger Tag laut Wochenplan */
@@ -993,6 +1319,7 @@ function renderExCard(wex, xi) {
   let h = '<div class="ex-card"><div class="ex-head">' + Icons.thumb(ex) +
     '<div class="ex-title">' + esc(ex.name) +
     '<div class="ex-title-row"><span class="tag" style="margin-right:0">' + esc(ex.mg) + '</span>' +
+    (rehaExAktiv(ex) ? '<span class="tag tag-reha" style="margin-right:0">Reha · Stufe ' + Coach.rehaStufe(rehaWerte(ex.mg).stufe).nr + '</span>' : '') +
     (wex.ersetztFuer ? '<span class="tag tag-orange" style="margin-right:0">ersetzt ' + esc(exById(wex.ersetztFuer).name) + '</span>' : '') +
     '</div></div>' +
     '<button class="wo-icon-btn" data-action="wo-ex-menu" data-ex="' + xi + '" aria-label="Optionen für ' + esc(ex.name) + '">⋯</button>' +
@@ -1022,6 +1349,17 @@ function renderExCard(wex, xi) {
       : (prog.typ === 'deload' ? 'deload' : (prog.typ === 'halten' ? 'halten' : 'neutral'));
     h += '<div class="prog-row">' +
       '<button class="prog-chip ' + cls + '" data-action="prog-apply" data-ex="' + xi + '" data-kg="' + prog.kg + '"' + (prog.reps ? ' data-reps="' + prog.reps + '"' : '') + '>' + esc(prog.text) + '</button>' + warum + '</div>';
+  }
+  /* Rückmeldungs-Zeile: erscheint, sobald ein Arbeitssatz steht. Vorher gibt es
+     nichts zu bewerten, hinterher ist sie der wichtigste Eintrag der Übung. */
+  if (rehaExAktiv(ex) && wex.sets.some(s => s.done === true && !s.warmup)) {
+    const wert = rehaHeuteWert(ex.mg, wex.exId);
+    const a = wert == null ? null : Coach.rehaAmpel(wert, null);
+    h += '<button class="reha-zeile' + (a ? ' ' + a.farbe : '') + '" data-action="reha-schmerz" data-mg="' + esc(ex.mg) + '" data-exid="' + esc(wex.exId) + '">' +
+      (wert == null
+        ? '<span class="reha-ampel leer"></span><span>Wie war das Knie? Schmerz 0–10 eintragen</span>'
+        : '<span class="reha-ampel ' + a.farbe + '"></span><span>Schmerz ' + wert + '/10 — ' + esc(a.text) + '</span>') +
+      '</button>';
   }
   h += '<div class="set-cols"><span>Satz</span><span>' + (ex.bw ? '+kg' : 'kg') + '</span><span>Wdh.</span><span>RPE</span><span aria-hidden="true">✓</span></div>';
   /* Im Auswahlmodus liegt über jeder Zeile eine unsichtbare Trefferfläche: der
@@ -1350,6 +1688,15 @@ function checkSet(xi, si) {
   }
   save();
   render();
+  /* War das der letzte offene Arbeitssatz einer Reha-Übung, fragt der Modus
+     genau einmal nach dem Schmerzwert — direkt nach der Übung, weil die
+     Erinnerung daran schon eine Übung später unbrauchbar ist. Nur, wenn für
+     heute noch nichts eingetragen wurde; korrigieren geht über die Zeile in
+     der Übungskarte. */
+  if (rehaExAktiv(ex) && rehaHeuteWert(ex.mg, wex.exId) == null &&
+      !wex.sets.some(s2 => s2.done !== true && !s2.warmup)) {
+    setTimeout(() => rehaSchmerzSheet(ex.mg, wex.exId), 350);
+  }
 }
 
 /* --- Pausenrad ---------------------------------------------------------
@@ -2344,6 +2691,7 @@ function renderDaten() {
   h += '<div class="section-title">Training</div>' +
     settingRow('Intelligenter Coach', 'Pausen, Steigerungen und Wdh.-Ziele je nach Übungstyp & Muskelgruppe (evidenzbasiert), mit RPE-Autoregulation und Deload-Logik', switchHtml('coach', st.coach !== false)) +
     settingRow('Goku-Maskottchen', 'Son Goku begrüßt dich auf der Startseite und feiert dein Trainingsende — nie während des Trainings', switchHtml('goku', st.goku !== false));
+  if (st.coach !== false) h += rehaEinstellungenHtml();
   if (st.coach !== false) {
     h += '<div class="info-box">Der Coach setzt die Standards automatisch — z. B. ~3:30 min Pause und ~5-%-Schritte bei Beine-Grundübungen, 1:30 min und kleinste Schritte bei Bizeps &amp; Co. Pro Plan oder pro Übung kannst du die Pause weiterhin manuell überschreiben. Im Training zeigt dir „Warum?" die Begründung jeder Empfehlung.</div>';
   } else {
@@ -3145,6 +3493,56 @@ const ACTIONS = {
   'tab': el => { markViewAnim(); tab = el.dataset.tab; trainSub = null; uebSub = null; verlaufSub = null; editDraft = null; tplDraft = null; planAuswahl = null; satzAuswahl = null; closeSheet(); render(); window.scrollTo(0, 0); },
   'sheet-close': () => closeSheet(),
 
+  /* Reha-Modus */
+  'reha-schmerz': el => rehaSchmerzSheet(el.dataset.mg, el.dataset.exid || null),
+  'reha-schmerz-set': el => {
+    rehaEintragen(el.dataset.mg, 'uebung', +el.dataset.wert, el.dataset.exid || null);
+    closeSheet();
+    showToast('Eingetragen — morgen früh kommt der Morgen-Check');
+    render();
+  },
+  'reha-morgen': el => rehaMorgenSheet(el.dataset.mg),
+  'reha-morgen-set': el => {
+    const mg = el.dataset.mg;
+    rehaEintragen(mg, 'morgen', +el.dataset.wert, null);
+    closeSheet();
+    const w = rehaWerte(mg);
+    const a = Coach.rehaAmpel(w.schmerz, w.morgenDelta);
+    showToast(a.farbe === 'gruen' ? 'Grün — die Belastung wurde vertragen'
+      : (a.farbe === 'rot' ? 'Rot — der Coach nimmt die Last zurück' : 'Gelb — gleiche Last wiederholen'));
+    render();
+  },
+  'reha-detail': el => rehaDetailHtml(el.dataset.mg),
+  'reha-an': el => {
+    const mg = el.dataset.mg;
+    const jetzt = Date.now();
+    S.reha[mg] = Object.assign({ stufe: 2, basis: 0 }, S.reha[mg] || {},
+      { aktiv: true, seit: jetzt, stufeSeit: jetzt });
+    save();
+    closeSheet();
+    render();
+    rehaDetailHtml(mg);
+  },
+  'reha-aus': el => {
+    const mg = el.dataset.mg;
+    if (S.reha[mg]) S.reha[mg].aktiv = false;   // Verlauf bleibt erhalten
+    save();
+    closeSheet();
+    showToast(mg + ': Reha-Modus beendet');
+    render();
+  },
+  'reha-stufe-vor': el => {
+    const mg = el.dataset.mg;
+    const r = S.reha[mg];
+    if (!r) return;
+    r.stufe = Math.min(4, (r.stufe || 2) + 1);
+    r.stufeSeit = Date.now();
+    save();
+    closeSheet();
+    showToast('Stufe ' + r.stufe + ' — ' + Coach.rehaStufe(r.stufe).name);
+    render();
+  },
+
   /* Training / Pläne */
   'train-home': () => { markViewAnim(); trainSub = null; tplDraft = null; planAuswahl = null; render(); },
   'plaene': () => { markViewAnim(); trainSub = 'plaene'; tplDraft = null; planAuswahl = null; render(); },
@@ -3569,8 +3967,22 @@ const ACTIONS = {
         prog.hinweis.map(z => '<div class="coach-schritt"><span class="coach-was">' + esc(z[0]) +
           '</span><span class="coach-wie">' + esc(z[1]) + '</span></div>').join('') + '</div>'
       : '';
+    /* Läuft der Reha-Modus, gehört die Ampel über die Empfehlung: Sie ist der
+       Grund, warum der Vorschlag so aussieht, wie er aussieht. */
+    let rehaKopf = '';
+    if (prog.reha) {
+      const w = rehaWerte(ex.mg);
+      const a = Coach.rehaAmpel(w.schmerz, w.morgenDelta);
+      const tut = Coach.rehaTutWoche(rehaTutWocheSek(ex.mg));
+      rehaKopf = '<div class="card reha-karte"><div class="reha-kopf"><span class="reha-ampel ' + a.farbe + '"></span>' +
+        '<div><div class="li-title li-title-sm">Reha · Stufe ' + prog.reha.stufe + ' — ' + esc(prog.reha.stufeName) + '</div>' +
+        '<div class="li-sub li-sub-wrap">' + esc(a.text) + '</div></div></div>' +
+        '<div class="mini-note">' + esc(a.grund) + '</div>' +
+        '<div class="mini-note">Sehnen-Belastungszeit diese Woche: <b>' + esc(tut.text) + '</b> — ' + esc(tut.grund) + '</div></div>';
+    }
     openSheet('<div class="sheet-title">Coach-Empfehlung</div>' +
       '<div class="sheet-sub"><b>' + esc(ex.name) + '</b> · ' + esc(k.label) + '</div>' +
+      rehaKopf +
       '<div class="info-box"><b>' + esc(prog.text) + '</b></div>' +
       schritte +
       (prog.grund ? '<div class="section-title">Warum</div><div class="info-box">' + esc(prog.grund) + '</div>' : '') +
@@ -3579,6 +3991,7 @@ const ACTIONS = {
         ? 'Von dir festgelegt (Plan- bzw. Übungs-Einstellung).'
         : (S.settings.coach !== false ? esc(Coach.pauseInfo(ex).grund) : 'Pauschalwert aus den Einstellungen (Klassik-Modus).')) + '</div>' +
       '<div class="mini-note">' + esc(Coach.QUELLEN) + '</div>' +
+      (prog.reha ? '<div class="mini-note">' + esc(Coach.REHA_QUELLEN) + '</div>' : '') +
       '<div class="sheet-actions"><button class="btn btn-primary" data-action="sheet-close">Alles klar</button></div>');
   },
   'set-add': el => {
@@ -4386,6 +4799,23 @@ document.addEventListener('change', e => {
   if (el.dataset.esel === 'rpe') {
     const s = editDraft.exercises[+el.dataset.x].sets[+el.dataset.s];
     s.rpe = el.value ? parseFloat(el.value) : null;
+    return;
+  }
+  /* Reha-Selects (Stufe, Ausgangswert) — eigener Schlüssel, damit sie sich nicht
+     mit dem Satz-Index `data-set` im Training überschneiden. */
+  if (el.dataset.rehasel) {
+    const mg = el.dataset.mg;
+    const r = S.reha[mg];
+    if (!r) return;
+    if (el.dataset.rehasel === 'stufe') {
+      const neu = Math.min(4, Math.max(1, parseInt(el.value, 10) || 2));
+      if (neu !== r.stufe) { r.stufe = neu; r.stufeSeit = Date.now(); }
+    } else if (el.dataset.rehasel === 'basis') {
+      r.basis = Math.min(10, Math.max(0, parseInt(el.value, 10) || 0));
+    }
+    save();
+    rehaDetailHtml(mg);
+    render();
     return;
   }
   /* Einstellungen (Schalter & Selects) */

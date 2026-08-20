@@ -1667,3 +1667,77 @@ circle.chart-dot { stroke: var(--card); stroke-width: 2; }
     bottom: 0;
     transform: translateY(-75%);
 }
+
+/* ===== Reha-Modus =====
+   Die Ampel ist das tragende Zeichen des Modus und taucht an vier Stellen auf:
+   Übungskarte, Startseite, Einstellungsliste und Verlauf. Sie ist deshalb ein
+   eigener Punkt und keine Einfärbung des Textes — Farbe allein trägt die
+   Information nicht, daneben steht immer der Klartext. */
+.reha-ampel {
+  width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+  background: var(--card-2);
+}
+.reha-ampel.gruen { background: var(--green); }
+.reha-ampel.gelb { background: var(--orange); }
+.reha-ampel.rot { background: var(--red); }
+.reha-ampel.unbekannt, .reha-ampel.leer { background: var(--card-2); border: 1.5px dashed var(--sep); box-sizing: border-box; }
+
+.tag-reha { background: var(--blue-soft); color: var(--blue-ink); }
+
+/* Rückmeldungs-Zeile in der Übungskarte */
+.reha-zeile {
+  display: flex; align-items: center; gap: var(--sp-2);
+  width: 100%; margin: var(--sp-2) 0 0;
+  padding: 10px var(--sp-3);
+  background: var(--card-2); color: var(--text);
+  border: none; border-radius: var(--r-md);
+  font-size: 14px; font-family: inherit; text-align: left;
+  line-height: 1.35;
+}
+.reha-zeile:active { opacity: 0.7; }
+.reha-zeile.gruen { background: var(--green-soft); color: var(--green-ink); }
+.reha-zeile.gelb { background: var(--orange-soft); color: var(--orange-ink); }
+.reha-zeile.rot { background: var(--red-soft); color: var(--red-ink); }
+
+/* Morgen-Check auf der Startseite */
+.reha-morgen-karte {
+  display: flex; align-items: center; gap: var(--sp-2);
+  width: 100%; text-align: left; font-family: inherit;
+  border: none; color: var(--text);
+}
+.reha-morgen-karte:active { opacity: 0.75; }
+.reha-morgen-cta { font-size: 15px; font-weight: 600; color: var(--blue); flex-shrink: 0; }
+
+/* Skala 0–10. Elf Ziele nebeneinander bleiben auf einem Telefon nur bedienbar,
+   wenn sie die volle Breite ausnutzen und mindestens 40 pt hoch sind. */
+.reha-skala { display: flex; gap: 4px; margin: var(--sp-3) 0 var(--sp-1); }
+.reha-punkt {
+  flex: 1; min-width: 0; height: 46px;
+  border: 1.5px solid var(--sep); border-radius: var(--r-md);
+  background: var(--card); color: var(--text);
+  font-family: inherit; font-size: 15px; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.reha-punkt.gruen { border-color: var(--green); }
+.reha-punkt.gelb { border-color: var(--orange); }
+.reha-punkt.rot { border-color: var(--red); }
+.reha-punkt.gruen.on, .reha-punkt.gruen:active { background: var(--green); color: #fff; }
+.reha-punkt.gelb.on, .reha-punkt.gelb:active { background: var(--orange); color: #fff; }
+.reha-punkt.rot.on, .reha-punkt.rot:active { background: var(--red); color: #fff; }
+.reha-skala-legende {
+  display: flex; justify-content: space-between;
+  font-size: 12px; color: var(--text-2); margin-bottom: var(--sp-3);
+}
+
+/* Kopfzeile der Detailkarte */
+.reha-kopf { display: flex; align-items: center; gap: var(--sp-2); }
+
+/* Auswahl der Muskelgruppen, für die der Modus eingeschaltet werden kann */
+.reha-mg-wahl { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-3); }
+.reha-mg-btn {
+  padding: 9px var(--sp-3);
+  border: 1px solid var(--sep); border-radius: var(--r-md);
+  background: var(--card); color: var(--text);
+  font-family: inherit; font-size: 14px;
+}
+.reha-mg-btn:active { background: var(--card-2); }

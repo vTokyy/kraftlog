@@ -244,7 +244,10 @@ Altbestand ohne die neuen Felder).
   runs: [ { id: 'r-…', startedAt, distanzKm, dauerSec, notiz, stravaId? } ],
   activeWorkout: null | { …wie workout, Sätze mit done-Flag,
                           rest: null|{ startedAt, targetSec, exIdx, setIdx, signaled } },
-  bodyweight: [ { date: 'YYYY-MM-DD', kg } ]
+  bodyweight: [ { date: 'YYYY-MM-DD', kg } ],
+  reha: { [muskelgruppe]: { aktiv, seit, stufe: 1..4, stufeSeit, basis: 0..10 } },
+  rehaLog: [ { ts, mg, typ: 'uebung'|'morgen', wert: 0..10, exId|null, workoutId|null } ],
+  rehaInit: false        // Erstbelegung (Beine an) ist gelaufen
 }
 ```
 
@@ -486,6 +489,90 @@ Waden 0–16, Unterarme 0–12 (min 0 = optional, nur Obergrenze geprüft).
 | Velocity-Loss-Reviews (Held et al. 2022 u. a.) | ~20–25 % Leistungsverlust als Ermüdungsgrenze → Schwellen der Abfall-Achse |
 | Halperin et al. 2022 | RIR-Schätzungen nur nahe am Versagen belastbar → RIR-Deckel bei 5, RPE nie Voraussetzung |
 | ACSM Position Stand 2009 | Steigerungsschritt 2–10 % |
+
+## 9b. Reha-Modus (ab v40)
+
+Der normale Coach kennt genau ein Bremssignal: **nachlassende Leistung**. Nach einer
+Verletzung kommt das entscheidende Signal aber vorher und aus einer anderen Richtung —
+aus dem Gewebe. Muskulatur ist nach Wochen wieder belastbar, Sehnengewebe braucht Monate.
+Wer nur auf Wiederholungen schaut, steigert deshalb so lange weiter, bis es wieder wehtut.
+
+Der Reha-Modus legt eine **zweite Achse** über die Bewertung. Er wird pro Muskelgruppe
+eingeschaltet (`S.reha[mg].aktiv`); alle anderen Gruppen laufen völlig unberührt weiter —
+eine Reha an den Beinen ändert an der Waden-Empfehlung nichts.
+
+**Er kann nur bremsen, nie beschleunigen.** `rehaEmpfehlung()` ruft intern `empfehlung()`
+auf und dämpft deren Ergebnis. Für eine Laststeigerung müssen **beide** Achsen grün sein.
+
+### Die Ampel (`rehaAmpel`)
+
+Aus zwei Eingaben: Schmerz 0–10 während/nach der Übung und dem Zustand am **Morgen
+danach**, verrechnet gegen den persönlichen Ausgangswert (`basis`).
+
+| Ampel | Bedingung | Folge |
+|---|---|---|
+| grün | Schmerz ≤ 3 **und** Morgen-Delta ≤ 0 | Steigerung erlaubt, Schritt auf 5 % gedeckelt |
+| gelb | Schmerz 4–5 **oder** Morgen-Delta +1 | Belastung wiederholen, keine Steigerung |
+| rot | Schmerz > 5 **oder** Morgen-Delta ≥ +2 | Last −20 %, Isometrie-Empfehlung |
+| unbekannt | keine Rückmeldung eingetragen | halten — eine fehlende Angabe gilt nie als „gut" |
+
+Der Morgen-Check ist das schärfere Signal: Sehnengewebe reagiert **verzögert**, die
+Überlastung von heute zeigt sich morgen früh. Deshalb zählt eine Einheit ohne Morgen-Check
+auch nicht in die grüne Serie, die den Stufenwechsel freischaltet.
+
+### Die vier Stufen (`REHA_STUFEN`)
+
+Aus dem PTLE-Programm (Breda et al. 2021) auf das übertragen, was eine Trainings-App
+steuern kann — Last, Wiederholungen, Sätze, Tempo. Stufe 3 des Originals (Plyometrie) ist
+keine Hantelarbeit und steht als Hinweis in Stufe 4, nicht als eigene Vorgabe.
+
+| Stufe | Name | Wdh.-Ziel | Kern |
+|---|---|---|---|
+| 1 | Beruhigen | 12–15 | Isometrie 5 × 45 s @ ~70 % MVC, Last steht still |
+| 2 | Aufbau | 10–15 | HSR-Einstieg (~15RM), Tempo 3 s/3 s |
+| 3 | Kraft | 6–10 | HSR-Endpunkt (~6RM) — erst hier liegt die Last im Dehnungsfenster |
+| 4 | Rückkehr | Plan/Coach | Normale Ziele, Ampel läuft nur noch mit |
+
+Wechsel erst nach **≥ 7 Tagen in der Stufe und 3 Einheiten in Folge grün**
+(`rehaStufenCheck`). Der Modus schlägt ihn vor, ausgelöst wird er von Hand.
+
+### Was der Modus konkret ändert
+
+- **Schrittgröße** auf 5 % gedeckelt, **abgerundet** (5 % sind eine Obergrenze, keine
+  Zielgröße) — und nie der Doppelschritt aus der APRE-Logik.
+- **Wiederholungsziele** kommen aus der Stufe statt aus Plan/Kategorie (außer Stufe 4).
+- **Nur eine Stellschraube pro Schritt**: steigt das Gewicht, bleiben Sätze und
+  Wiederholungen stehen. Sonst ist ein Rückschlag nicht zuordenbar.
+- **Tempo 3 s hoch / 3 s runter** steht in jedem Hinweis — das ist der Wirkstoff.
+- **Sehnen-Belastungszeit** (`rehaTut`): Arbeitssätze ≥ 70 % der Top-Last × Wdh. × 6 s,
+  pro Woche summiert und gegen 180–300 s gestellt. Leichte Sätze zählen nicht mit.
+
+Bewusst **nicht** implementiert: der Acute:Chronic Workload Ratio. Er ist mathematisch
+gekoppelt, ohne kohärente kausale Deutung und als Vorhersage nicht brauchbar
+(Impellizzeri et al. 2020). Statt eines Quotienten steht hier ein schlichter Deckel.
+
+### Wo er in der Oberfläche auftaucht
+
+| Ort | Was |
+|---|---|
+| Übungskarte | Tag „Reha · Stufe N", Rückmeldungszeile mit Ampel, sobald ein Arbeitssatz steht |
+| nach dem letzten Arbeitssatz | Schmerz-Sheet (Skala 0–10, farbcodiert nach den Schwellen) — genau einmal pro Übung und Tag |
+| Startseite | Morgen-Check-Karte, wenn gestern trainiert und heute noch nichts eingetragen |
+| „Warum?"-Sheet | Ampelkarte mit Begründung, Wochenbilanz der Belastungszeit, Reha-Quellen |
+| Daten → Reha-Modus | Aktive Gruppen mit Ampel, Detail-Sheet (Stufe, Ausgangswert, Verlauf), Ein-Tap-Aktivierung für jede Muskelgruppe |
+
+### Quellen des Reha-Regelwerks
+
+| Quelle | Wofür sie im Code steht |
+|---|---|
+| Silbernagel et al. 2007, *Am J Sports Med* 35(6):897–906 | Pain-Monitoring-Modell: Schmerz ≤ 5/10 erlaubt, Rückkehr zum Ausgangsniveau am Morgen danach → Schwellen der Ampel. Schonung war der Belastung **unterlegen** |
+| Breda et al. 2021, *Br J Sports Med* 55(9):501–509 | Stufenmodell und Progressionskriterium Schmerz ≤ 3/10 + ≥ 1 Woche je Stufe |
+| Kongsgaard et al. 2009, *Scand J Med Sci Sports* 19(6):790–802 | Heavy Slow Resistance: Tempo 3 s/3 s, 15RM → 6RM über 12 Wochen → Wdh.-Ziele der Stufen |
+| Tsai et al. 2024, *Sci Rep* 14:6875 | 180–300 s hochgespannte Belastungszeit pro Woche; Verteilung auf 2,5–5 Einheiten nachrangig → `rehaTut` |
+| Arampatzis et al. 2020, *Front Physiol* 11:723 | Dehnungsfenster 4,5–6,5 % über ~3 s → Begründung für „schwer und langsam" statt leicht |
+| Rio et al. 2015, *Br J Sports Med* 49(19):1277–83 | Isometrie senkt Sehnenschmerz ~45 min ohne Kraftverlust → Werkzeug der Stufe 1 und der roten Ampel |
+| Liu, Li & Yang 2026, *BMC Sports Sci Med Rehabil* | Netzwerk-Metaanalyse: **keine** Übungsform der HSR überlegen → der Modus schreibt keine exotische Übungsform vor |
+| Buist et al. 2008; Impellizzeri et al. 2020 | Die 10-%-Regel und der ACWR halten der Prüfung nicht stand → schlichter 5-%-Deckel statt Quotient |
 
 ## 10. Wochenplan
 
