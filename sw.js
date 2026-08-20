@@ -4,7 +4,7 @@
  * VERSION wird von build.py (--bump) synchron zu den ?v=N-Einbindungen gehalten:
  * neue Version → neuer Cache → alte Caches werden beim Aktivieren gelöscht.
  */
-const VERSION = '40';
+const VERSION = '41';
 const CACHE = 'kraftlog-v' + VERSION;
 const DATEIEN = [
   './',
@@ -46,16 +46,20 @@ self.addEventListener('activate', e => {
 self.addEventListener('push', e => {
   let titel = 'Pause vorbei';
   let text = 'Weiter geht’s mit dem nächsten Satz.';
+  /* Der Tag kommt aus dem Payload: Pausen-Weckruf und Morgen-Erinnerung sind
+     verschiedene Meldungen und dürfen einander nicht ersetzen. */
+  let tag = 'kraftlog-pause';
   try {
     const d = e.data ? e.data.json() : null;
     if (d && d.notification) {
       if (d.notification.title) titel = d.notification.title;
       if (d.notification.body) text = d.notification.body;
+      if (d.notification.tag) tag = d.notification.tag;
     }
   } catch (_) { /* payloadlos oder kein JSON: Standardtext */ }
   e.waitUntil(self.registration.showNotification(titel, {
     body: text,
-    tag: 'kraftlog-pause'
+    tag: tag
   }));
 });
 self.addEventListener('notificationclick', e => {

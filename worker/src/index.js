@@ -1,7 +1,13 @@
 /* ===== Kraftlog-Proxy (Cloudflare Worker) =====
  * Zwei Aufgaben:
  * 1. Strava-Vermittler (Token-Tausch + Aktivitäten anlegen) — Strava erlaubt kein CORS.
- * 2. Pausen-Push: sekundengenaue Weckrufe über Durable-Object-Alarme; am Ziel wird eine
+ * 2. Push-Weckrufe über Durable-Object-Alarme — zwei getrennte Kanäle:
+ *      'pause'   Satzpause, sekundengenau, maximal eine Stunde im Voraus.
+ *      'morgen'  Reha-Morgen-Check am nächsten Tag, bis zu 48 Stunden im Voraus.
+ *    Beide Kanäle bekommen ein EIGENES Durable Object (Name = Endpoint + '#' + Kanal),
+ *    weil ein DO nur genau einen Alarm halten kann: läge die Morgen-Erinnerung im
+ *    selben Objekt, würde der nächste Satz sie stillschweigend überschreiben.
+ *    Am Ziel wird eine
  *    Declarative-Web-Push-Nachricht (RFC-8291-verschlüsselt, VAPID-signiert) an
  *    Apples/Googles Push-Dienst geschickt — das iPhone klingelt auch gesperrt,
  *    Musik läuft weiter. Ab iOS 18.4 zeigt Safari die Meldung direkt aus dem
@@ -128,7 +134,17 @@ async function verschluesselePayload(klartext, p256dh, auth) {
 
 /* Declarative-Web-Push-Nachricht bauen, verschlüsseln und senden.
  * title und navigate sind im deklarativen Format Pflicht. */
-async function sendeDeklarativenPush(sub, titel, text, vapid) {
+/* TTL und Dringlichkeit hängen am Kanal: Ein Pausen-Weckruf ist nach zwei
+   Minuten wertlos und soll dann lieber verfallen als verspätet klingeln. Eine
+   Morgen-Erinnerung darf dagegen noch ankommen, wenn das Telefon eine Stunde
+   aus war — sie gilt den ganzen Vormittag. */
+const KANAELE = {
+  pause:  { maxDelay: 3600,   ttl: '120',   urgency: 'high' },
+  morgen: { maxDelay: 172800, ttl: '10800', urgency: 'normal' },
+};
+function kanalInfo(name) { return KANAELE[name] || KANAELE.pause; }
+
+async function sendeDeklarativenPush(sub, titel, text, vapid, kanal) {
   const payload = JSON.stringify({
     web_push: 8030,
     notification: {
@@ -139,7 +155,10 @@ async function sendeDeklarativenPush(sub, titel, text, vapid) {
       dir: 'ltr',
       body: String(text || 'Weiter geht’s mit dem nächsten Satz.').slice(0, 500),
       navigate: PUSH_SUBJECT,   // öffnet die App beim Antippen
-      tag: 'kraftlog-pause',    // neue Meldung ersetzt die vorige statt zu stapeln
+      /* Ein Tag JE KANAL: Eine neue Meldung ersetzt die vorige desselben Kanals,
+         statt zu stapeln — die Morgen-Erinnerung darf aber keinen Pausen-Weckruf
+         verdrängen und umgekehrt. */
+      tag: 'kraftlog-' + (kanal || 'pause'),
       silent: false,
     },
   });
@@ -152,8 +171,8 @@ async function sendeDeklarativenPush(sub, titel, text, vapid) {
       'Authorization': 'vapid t=' + jwt + ', k=' + vapid.publicKey,
       'Content-Encoding': 'aes128gcm',
       'Content-Type': 'application/octet-stream',
-      'TTL': '120',        // Weckruf veraltet schnell — lieber verfallen als verspätet klingeln
-      'Urgency': 'high',
+      'TTL': kanalInfo(kanal).ttl,
+      'Urgency': kanalInfo(kanal).urgency,
     },
     body: body,
   });
@@ -180,13 +199,15 @@ export class PausenTimer {
       const d = await request.json();
       /* Alles, was alarm() später braucht, als ein Auftrag ablegen —
        * alarm() läuft ohne Zugriff auf das Singleton-DO. */
+      const kanal = d.kanal === 'morgen' ? 'morgen' : 'pause';
       await this.state.storage.put('auftrag', {
         sub: d.subscription,
         vapid: d.vapid,
         titel: d.titel || null,
         text: d.text || null,
+        kanal,
       });
-      const delay = Math.max(5, Math.min(3600, Number(d.delaySec) || 0));
+      const delay = Math.max(5, Math.min(kanalInfo(kanal).maxDelay, Number(d.delaySec) || 0));
       await this.state.storage.setAlarm(Date.now() + delay * 1000);
       return antwort({ ok: true, feuertIn: delay }, 200);
     }
@@ -199,9 +220,17 @@ export class PausenTimer {
   async alarm() {
     const a = await this.state.storage.get('auftrag');
     if (a && a.sub && a.vapid) {
-      try { await sendeDeklarativenPush(a.sub, a.titel, a.text, a.vapid); } catch (e) { }
+      try { await sendeDeklarativenPush(a.sub, a.titel, a.text, a.vapid, a.kanal); } catch (e) { }
     }
   }
+}
+
+/* Ein Durable Object je Gerät UND Kanal. Der Pausen-Kanal behält bewusst den
+   nackten Endpoint als Namen — sonst verlören bereits geplante Weckrufe beim
+   Deploy ihr Objekt und liefen ins Leere. */
+function doName(d) {
+  const kanal = d.kanal === 'morgen' ? 'morgen' : 'pause';
+  return kanal === 'pause' ? d.subscription.endpoint : d.subscription.endpoint + '#' + kanal;
 }
 
 /* ---------- Haupt-Router ---------- */
@@ -245,12 +274,12 @@ export default {
         if (!d.subscription || !d.subscription.endpoint) return antwort({ message: 'subscription fehlt' }, 400, cors);
         const cfg = env.PAUSEN.get(env.PAUSEN.idFromName('vapid-config'));
         const vapid = await (await cfg.fetch('https://do/vapid')).json();
-        const timer = env.PAUSEN.get(env.PAUSEN.idFromName(d.subscription.endpoint));
+        const timer = env.PAUSEN.get(env.PAUSEN.idFromName(doName(d)));
         const r = await timer.fetch('https://do/planen', {
           method: 'POST',
           body: JSON.stringify({
             subscription: d.subscription, delaySec: d.delaySec, vapid,
-            titel: d.titel, text: d.text,
+            titel: d.titel, text: d.text, kanal: d.kanal,
           }),
         });
         return antwort(await r.json(), r.status, cors);
@@ -258,7 +287,7 @@ export default {
       if (url.pathname === '/push/stornieren' && request.method === 'POST') {
         const d = await request.json();
         if (!d.subscription || !d.subscription.endpoint) return antwort({ message: 'subscription fehlt' }, 400, cors);
-        const timer = env.PAUSEN.get(env.PAUSEN.idFromName(d.subscription.endpoint));
+        const timer = env.PAUSEN.get(env.PAUSEN.idFromName(doName(d)));
         const r = await timer.fetch('https://do/stornieren', { method: 'POST' });
         return antwort(await r.json(), r.status, cors);
       }

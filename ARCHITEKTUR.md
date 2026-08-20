@@ -230,7 +230,8 @@ Altbestand ohne die neuen Felder).
     incUpper: 2.5, incLower: 5,             // Klassik-Modus-Inkremente
     lastExport: null, groesseCm: null,      // Export-Erinnerung (7 Tage), BMI
     strava: { workerUrl, clientId, refreshToken, accessToken, accessBis, athlet, autoPost },
-    push:   { aktiv: false, sub: null }     // sub = PushSubscription.toJSON()
+    push:   { aktiv: false, sub: null },    // sub = PushSubscription.toJSON()
+    rehaPush: { aktiv: true, zeit: '08:00' }  // Erinnerung an den Morgen-Check
   },
   customExercises: [ { id: 'cu-…', name, mg, eq, compound } ],
   exerciseSettings: { [exId]: { restSec?, notiz? } },      // Overrides pro Übung
@@ -558,8 +559,28 @@ gekoppelt, ohne kohärente kausale Deutung und als Vorhersage nicht brauchbar
 | Übungskarte | Tag „Reha · Stufe N", Rückmeldungszeile mit Ampel, sobald ein Arbeitssatz steht |
 | nach dem letzten Arbeitssatz | Schmerz-Sheet (Skala 0–10, farbcodiert nach den Schwellen) — genau einmal pro Übung und Tag |
 | Startseite | Morgen-Check-Karte, wenn gestern trainiert und heute noch nichts eingetragen |
+| Profil | Eigener Abschnitt zwischen Kopfkacheln und Wochenvolumen: Ampelkarte, vier Kennzahl-Kacheln (letzte Belastung, grüne Serie, Sehnenzeit/Woche, Tage in Stufe), Schmerzverlauf als Liniendiagramm, offener Check als Knopf |
 | „Warum?"-Sheet | Ampelkarte mit Begründung, Wochenbilanz der Belastungszeit, Reha-Quellen |
 | Daten → Reha-Modus | Aktive Gruppen mit Ampel, Detail-Sheet (Stufe, Ausgangswert, Verlauf), Ein-Tap-Aktivierung für jede Muskelgruppe |
+
+### Morgen-Erinnerung (Push)
+
+Der Morgen-Check ist nur am Morgen danach etwas wert. Er kommt deshalb als Push —
+**nur wenn wirklich etwas ansteht**: am Morgen nach einer Reha-Einheit. Eine Meldung,
+die jeden Tag kommt, wird nach einer Woche ungelesen weggewischt, und damit auch die,
+auf die es ankommt.
+
+`rehaMorgenPushPlanen()` prüft, ob am Vortag des nächsten Erinnerungszeitpunkts eine
+Reha-Einheit lag und für den Zieltag noch kein Morgen-Wert existiert. Trifft beides zu,
+wird geplant, sonst **storniert** — die Funktion ist idempotent und wird an vier Stellen
+aufgerufen: App-Start, Trainingsende, nach dem Eintragen eines Schmerzwerts und nach dem
+Eintragen des Morgen-Werts.
+
+Ohne eingerichteten Pausen-Push gibt es keinen Weckruf aufs gesperrte Telefon; die Karte
+auf Startseite und Profil bleibt dann der Weg. Der Einstellungsbereich sagt das explizit.
+
+Ohne Opt-in `pushInhalt` nennt die Meldung **keine Muskelgruppe** — der Text verlässt das
+Gerät sonst (verschlüsselt) Richtung Push-Dienst.
 
 ### Quellen des Reha-Regelwerks
 
@@ -614,6 +635,22 @@ Krafttraining als `sport_type: 'WeightTraining'` mit generierter Beschreibung
 Gespeicherte `stravaId` verhindert Doppel-Posts.
 
 ## 13. Cloudflare Worker (`worker/`, Name `kraftlog-proxy`)
+
+**Zwei Push-Kanäle (ab v41).** Ein Durable Object kann nur genau **einen** Alarm halten.
+Läge die Morgen-Erinnerung im selben Objekt wie der Pausen-Weckruf, würde der nächste
+abgehakte Satz sie stillschweigend überschreiben. Deshalb bekommt jeder Kanal ein eigenes
+DO (Name = Endpoint, für `morgen` zusätzlich `#morgen`):
+
+| Kanal | Vorlauf max. | TTL | Urgency | Wofür |
+|---|---|---|---|---|
+| `pause` (Standard) | 1 h | 120 s | high | Satzpause — nach zwei Minuten wertlos, soll dann verfallen |
+| `morgen` | 48 h | 3 h | normal | Reha-Morgen-Check — gilt den ganzen Vormittag |
+
+Der Pausen-Kanal behält bewusst den **nackten Endpoint** als DO-Namen: Sonst verlören
+bereits geplante Weckrufe beim Deploy ihr Objekt und liefen ins Leere. Der
+`tag` der Benachrichtigung hängt ebenfalls am Kanal, damit die beiden Meldungen einander
+auf dem Sperrbildschirm nicht ersetzen (`sw.js` übernimmt ihn aus dem Payload).
+
 
 Ein Worker, zwei Aufgaben, deploybar per `npx wrangler deploy`:
 

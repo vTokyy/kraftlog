@@ -1741,3 +1741,14 @@ circle.chart-dot { stroke: var(--card); stroke-width: 2; }
   font-family: inherit; font-size: 14px;
 }
 .reha-mg-btn:active { background: var(--card-2); }
+
+/* Reha-Karte im Profil: dieselbe Kachelsprache wie die Kennzahlen darunter,
+   nur mit Ampel und Chevron. */
+.reha-profil {
+  display: block; width: 100%; text-align: left;
+  font-family: inherit; color: var(--text); border: none;
+  margin-bottom: var(--sp-2);
+}
+.reha-profil:active { opacity: 0.75; }
+.reha-profil .reha-kopf { gap: var(--sp-3); }
+.input-zeit { width: 104px; text-align: center; font-variant-numeric: tabular-nums; }

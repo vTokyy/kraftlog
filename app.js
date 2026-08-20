@@ -69,7 +69,8 @@ function defaults() {
       strava: { workerUrl: '', clientId: '', refreshToken: null, accessToken: null, accessBis: 0, athlet: '', autoPost: true },
       workerKey: '',        // Zugangsschlüssel des Cloudflare-Workers (X-Kraftlog-Key)
       push: { aktiv: false, sub: null },
-      pushInhalt: false     // Opt-in: Übungsname in der Push-Meldung (verlässt dafür das Gerät)
+      pushInhalt: false,    // Opt-in: Übungsname in der Push-Meldung (verlässt dafür das Gerät)
+      rehaPush: { aktiv: true, zeit: '08:00' }   // Erinnerung an den Morgen-Check
     },
     customExercises: [],
     exerciseSettings: {},
@@ -116,6 +117,10 @@ function sanitizeState(s) {
   s.settings.push = (s.settings.push && typeof s.settings.push === 'object')
     ? Object.assign({}, d.settings.push, s.settings.push)
     : d.settings.push;
+  s.settings.rehaPush = (s.settings.rehaPush && typeof s.settings.rehaPush === 'object')
+    ? Object.assign({}, d.settings.rehaPush, s.settings.rehaPush)
+    : d.settings.rehaPush;
+  if (!/^\d{2}:\d{2}$/.test(s.settings.rehaPush.zeit)) s.settings.rehaPush.zeit = '08:00';
   if (typeof s.settings.workerKey !== 'string') s.settings.workerKey = '';
   s.settings.pushInhalt = s.settings.pushInhalt === true;
   s.settings.goku = s.settings.goku !== false;
@@ -808,6 +813,18 @@ function rehaEinstellungenHtml() {
         '<div class="li-sub li-sub-wrap">' + esc(a.text) + '</div></div><span class="chev">›</span></button>';
     });
   }
+  if (aktive.length) {
+    const rp = rehaPushEinstellung();
+    h += settingRow('Morgen-Erinnerung', 'Push am Morgen nach einer Reha-Einheit. An Tagen ohne offenen Check bleibt es still — eine Meldung, die jeden Tag kommt, wischt man irgendwann ungelesen weg.',
+      switchHtml('rehaPushAktiv', rp.aktiv));
+    if (rp.aktiv) {
+      h += settingRow('Uhrzeit', 'Je näher am Aufstehen, desto aussagekräftiger ist der Wert',
+        '<input class="input-mini input-zeit" type="time" value="' + esc(rp.zeit) + '" data-rehazeit>');
+      if (!pushAktiv()) {
+        h += '<div class="info-box">Der Pausen-Push ist noch nicht eingerichtet — ohne ihn gibt es keinen Weckruf aufs gesperrte Telefon. Der Morgen-Check steht dann trotzdem als Karte auf der Startseite, sobald du die App öffnest. Einrichtung weiter unten unter „Pausen-Push".</div>';
+      }
+    }
+  }
   const offen = MGS.filter(mg => !rehaFuer(mg));
   h += '<div class="reha-mg-wahl">';
   offen.forEach(mg => {
@@ -815,6 +832,123 @@ function rehaEinstellungenHtml() {
   });
   h += '</div>';
   h += '<div class="mini-note">' + esc(Coach.REHA_QUELLEN) + '</div>';
+  return h;
+}
+
+/* ---- Morgen-Erinnerung ----
+ * Der Morgen-Check ist nur am Morgen danach etwas wert und geht im Tagesablauf
+ * sonst unter. Die Erinnerung kommt deshalb per Push — und ZWAR NUR, wenn
+ * wirklich etwas ansteht: am Morgen nach einer Reha-Einheit. Eine Meldung, die
+ * jeden Tag kommt, wird nach einer Woche weggewischt, ohne gelesen zu werden.
+ *
+ * Geplant wird beim Beenden eines Trainings und beim Öffnen der App (falls die
+ * App seither zu war). Der Worker hält den Auftrag in einem EIGENEN Durable
+ * Object (Kanal 'morgen') — sonst würde die nächste Satzpause ihn überschreiben.
+ */
+function rehaPushEinstellung() {
+  const p = S.settings.rehaPush;
+  return {
+    aktiv: !p || p.aktiv !== false,
+    zeit: (p && /^\d{2}:\d{2}$/.test(p.zeit)) ? p.zeit : '08:00'
+  };
+}
+
+/* Nächster Zeitpunkt der eingestellten Uhrzeit, der nach JETZT liegt. */
+function rehaNaechsterMorgen() {
+  const [std, min] = rehaPushEinstellung().zeit.split(':').map(Number);
+  const d = new Date();
+  d.setHours(std, min, 0, 0);
+  if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
+  return d.getTime();
+}
+
+/* Steht für den nächsten Morgen ein Check an? Das ist der Fall, wenn an dem Tag
+   VOR jenem Morgen eine Reha-Einheit lag — also heute, wenn die Erinnerung
+   morgen früh kommt, bzw. gestern, wenn sie noch heute früh käme. */
+function rehaCheckFaelligAm(zielMs) {
+  const vortag = todayStr(new Date(zielMs - TAG_MS));
+  const zielTag = todayStr(new Date(zielMs));
+  return rehaAktiveGruppen().some(mg => {
+    const trainiert = rehaSessions(mg).some(s => s.datum === vortag);
+    if (!trainiert) return false;
+    return !(S.rehaLog || []).some(e =>
+      e.mg === mg && e.typ === 'morgen' && todayStr(new Date(e.ts)) === zielTag);
+  });
+}
+
+function rehaMorgenPushPlanen() {
+  if (!rehaPushEinstellung().aktiv || !pushAktiv()) return;
+  const ziel = rehaNaechsterMorgen();
+  if (!rehaCheckFaelligAm(ziel)) { rehaMorgenPushStornieren(); return; }
+  const gruppen = rehaAktiveGruppen();
+  pushPlanen((ziel - Date.now()) / 1000, 'morgen', {
+    titel: 'Morgen-Check',
+    /* Ohne Opt-in für Inhalte bleibt die Muskelgruppe auf dem Gerät — der Text
+       verlässt es sonst (verschlüsselt) Richtung Push-Dienst. */
+    text: (S.settings.pushInhalt === true && gruppen.length === 1)
+      ? 'Wie fühlt sich ' + gruppen[0] + ' heute an? Skala kurz ausfüllen.'
+      : 'Wie fühlt es sich heute an? Skala kurz ausfüllen.'
+  });
+}
+function rehaMorgenPushStornieren() {
+  if (!pushAktiv()) return;
+  pushStorno('morgen');
+}
+
+/* ---- Reha-Übersicht im Profil ----
+   Der Modus taucht dort auf, wo ohnehin nach Zahlen geschaut wird — zwischen
+   Trainings, Tonnage und Bestleistungen. Nicht als Fußnote: Wenn eine Ampel auf
+   Rot steht, ist das die wichtigste Zahl auf dem Schirm. */
+function rehaProfilHtml() {
+  const gruppen = rehaAktiveGruppen();
+  if (!gruppen.length) return '';
+  let h = '<div class="section-title">Reha</div>';
+  gruppen.forEach(mg => {
+    const w = rehaWerte(mg);
+    const st = Coach.rehaStufe(w.stufe);
+    const a = Coach.rehaAmpel(w.schmerz, w.morgenDelta);
+    const tut = Coach.rehaTutWoche(rehaTutWocheSek(mg));
+    const check = Coach.rehaStufenCheck(w.stufe, w.tageInStufe, w.gruenSerie);
+    /* Kennzahlen in derselben Kachelform wie Trainings und Tonnage — der
+       Reha-Stand ist eine Kennzahl unter anderen, keine Sonderwelt. */
+    h += '<button class="card reha-profil" data-action="reha-detail" data-mg="' + esc(mg) + '">' +
+      '<div class="reha-kopf"><span class="reha-ampel ' + a.farbe + '"></span>' +
+      '<div class="li-main"><div class="li-title">' + esc(mg) + ' · Stufe ' + st.nr + ' — ' + esc(st.name) + '</div>' +
+      '<div class="li-sub li-sub-wrap">' + esc(a.text) + '</div></div><span class="chev">›</span></div></button>';
+    /* Die Zusatzzeile der Kachel ist HTML — eigener Helfer, damit sie dieselbe
+       Typografie trägt wie die Deltas bei Tonnage und PRs. */
+    const note = (txt, art) => txt ? '<div class="stat-delta ' + (art || 'flat') + '">' + esc(txt) + '</div>' : '';
+    h += '<div class="stat-grid">' +
+      statTile(w.schmerz == null ? '–' : w.schmerz + '/10', 'letzte Belastung',
+        w.morgenDelta == null
+          ? note('Morgen-Check fehlt', 'down')
+          : note('Morgen danach ' + (w.morgenDelta > 0 ? '+' : '') + w.morgenDelta, w.morgenDelta <= 0 ? 'up' : 'down')) +
+      statTile(w.gruenSerie, 'Einheiten grün in Folge',
+        check.kann ? note('Stufe ' + check.naechste + ' ist frei', 'up')
+          : note(3 - w.gruenSerie > 0 ? 'noch ' + (3 - w.gruenSerie) + ' bis Stufe ' + Math.min(4, st.nr + 1) : '')) +
+      statTile(Math.round(rehaTutWocheSek(mg)) + ' s', 'Sehnenzeit · Woche',
+        note(tut.stand === 'gut' ? 'im Fenster 180–300 s' : (tut.stand === 'wenig' ? 'unter 180 s' : 'über 300 s'),
+          tut.stand === 'gut' ? 'up' : 'down')) +
+      statTile(w.tageInStufe, 'Tage in Stufe ' + st.nr,
+        note(w.tageInStufe >= Coach.REHA_STUFE_MIN_TAGE ? 'Mindestdauer erfüllt' : 'mindestens ' + Coach.REHA_STUFE_MIN_TAGE,
+          w.tageInStufe >= Coach.REHA_STUFE_MIN_TAGE ? 'up' : 'flat')) +
+      '</div>';
+    /* Schmerzverlauf. Weniger ist besser — deshalb maxIstBest:false, und die
+       Schwellen stehen im Untertitel statt als Zone, die es hier nicht gibt. */
+    const punkte = w.sessions.slice(-24).map(s => ({
+      x: s.ts, xLabel: fmtDatumKurz(s.ts), y: s.schmerz,
+      tip: fmtDatumLang(s.ts) + ' · Belastung ' + s.schmerz + '/10' +
+        (s.morgen == null ? ' · kein Morgen-Check' : ' · Morgen danach ' + s.morgen + '/10')
+    }));
+    h += chartCard('Schmerz beim Training · ' + mg,
+      Charts.lineChart({ points: punkte, einheit: '/10', maxIstBest: false,
+        leer: 'Noch keine Rückmeldung eingetragen' }),
+      'Bis 3 wird gesteigert, bis 5 ist erlaubt, darüber nimmt der Coach die Last zurück.');
+    /* Offener Check gehört direkt unter die Zahlen, nicht nur auf die Startseite. */
+    if (rehaMorgenOffen().indexOf(mg) >= 0) {
+      h += '<button class="btn btn-block btn-primary" data-action="reha-morgen" data-mg="' + esc(mg) + '">Morgen-Check für ' + esc(mg) + ' eintragen</button>';
+    }
+  });
   return h;
 }
 
@@ -1818,6 +1952,7 @@ function finishWorkout() {
         '<button class="btn" data-action="pu-keep">Plan so lassen</button></div>');
     }
   }
+  rehaMorgenPushPlanen();   // Reha trainiert? Dann morgen früh an den Check erinnern
   swNeuladenWennBereit();   // während des Trainings vorgemerktes Update jetzt einspielen
 }
 function discardWorkout() {
@@ -1961,10 +2096,13 @@ function pushAktiv() {
   const p = S.settings.push;
   return !!(p && p.aktiv && p.sub && S.settings.strava.workerUrl);
 }
-function pushPlanen(delaySec) {
+function pushPlanen(delaySec, kanal, meldung) {
   if (!pushAktiv() || !navigator.onLine || !(delaySec > 0)) return;
   const koerper = { subscription: S.settings.push.sub, delaySec: Math.round(delaySec) };
-  const info = pushMeldung();
+  if (kanal) koerper.kanal = kanal;
+  /* Der Pausen-Kanal holt seinen Text selbst aus dem laufenden Training; andere
+     Kanäle bringen ihn mit. */
+  const info = meldung || (kanal ? null : pushMeldung());
   if (info) { koerper.titel = info.titel; koerper.text = info.text; }
   workerFetch('/push/planen', {
     method: 'POST',
@@ -1999,12 +2137,14 @@ function pushMeldung() {
     text: (wex.sets[treffer.i].warmup ? name + ' — Aufwärmsatz' : name + ' — Satz ' + (treffer.i + 1)).slice(0, 120)
   };
 }
-function pushStorno() {
+function pushStorno(kanal) {
   if (!pushAktiv()) return;
+  const koerper = { subscription: S.settings.push.sub };
+  if (kanal) koerper.kanal = kanal;
   workerFetch('/push/stornieren', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ subscription: S.settings.push.sub })
+    body: JSON.stringify(koerper)
   }).catch(() => { });
 }
 function b64urlZuBytes(s) {
@@ -2574,7 +2714,7 @@ function renderProfil() {
 
   let h = '<h1 class="view-title">Profil</h1>' + warnHtml();
   if (!S.workouts.length && !S.runs.length) {
-    return h + leerHtml('chart', 'Noch nichts zu zeigen',
+    return h + rehaProfilHtml() + leerHtml('chart', 'Noch nichts zu zeigen',
       'Sobald du trainierst, entstehen hier deine Kennzahlen: Wochenvolumen je Muskelgruppe, Trainings pro Woche und deine letzten Bestleistungen.');
   }
   h += '<div class="stat-grid">' +
@@ -2591,6 +2731,9 @@ function renderProfil() {
       statTile(fmtKg(Math.round(km30 * 10) / 10) + ' km', 'gelaufen · 30 Tage', kmVor30 > 0 ? deltaHtml(km30 - kmVor30, 'km ggü. Vormonat', true) : '') +
       '</div>';
   }
+  /* Reha direkt hinter die Kopfkacheln: Steht eine Ampel auf Rot, ist das die
+     wichtigste Zahl auf diesem Schirm — sie darf nicht unter den Diagrammen liegen. */
+  h += rehaProfilHtml();
   /* Wochenvolumen pro Muskelgruppe */
   h += '<div class="section-title">Wochenvolumen · 12 Wochen</div>' +
     '<div class="chip-row">' + ['Alle'].concat(MGS).map(m =>
@@ -3497,6 +3640,7 @@ const ACTIONS = {
   'reha-schmerz': el => rehaSchmerzSheet(el.dataset.mg, el.dataset.exid || null),
   'reha-schmerz-set': el => {
     rehaEintragen(el.dataset.mg, 'uebung', +el.dataset.wert, el.dataset.exid || null);
+    rehaMorgenPushPlanen();   // ab jetzt steht der Check von morgen früh fest
     closeSheet();
     showToast('Eingetragen — morgen früh kommt der Morgen-Check');
     render();
@@ -3505,6 +3649,8 @@ const ACTIONS = {
   'reha-morgen-set': el => {
     const mg = el.dataset.mg;
     rehaEintragen(mg, 'morgen', +el.dataset.wert, null);
+    /* Erledigt — der geplante Weckruf wäre jetzt nur noch Lärm. */
+    rehaMorgenPushPlanen();
     closeSheet();
     const w = rehaWerte(mg);
     const a = Coach.rehaAmpel(w.schmerz, w.morgenDelta);
@@ -4801,6 +4947,15 @@ document.addEventListener('change', e => {
     s.rpe = el.value ? parseFloat(el.value) : null;
     return;
   }
+  /* Uhrzeit der Morgen-Erinnerung. Eigenes Attribut, weil der Zahlen-Zweig des
+     input-Listeners jedes `data-set`-Feld durch parseNum() schickt — aus "08:00"
+     würde dort Müll. */
+  if (el.hasAttribute && el.hasAttribute('data-rehazeit')) {
+    S.settings.rehaPush.zeit = /^\d{2}:\d{2}$/.test(el.value) ? el.value : '08:00';
+    rehaMorgenPushPlanen();
+    save();
+    return;
+  }
   /* Reha-Selects (Stufe, Ausgangswert) — eigener Schlüssel, damit sie sich nicht
      mit dem Satz-Index `data-set` im Training überschneiden. */
   if (el.dataset.rehasel) {
@@ -4822,6 +4977,11 @@ document.addEventListener('change', e => {
   if (el.dataset.set) {
     const k = el.dataset.set;
     if (k === 'theme') { S.settings.theme = el.value; applyTheme(); }
+    else if (k === 'rehaPushAktiv') {
+      S.settings.rehaPush.aktiv = el.checked;
+      if (el.checked) rehaMorgenPushPlanen(); else rehaMorgenPushStornieren();
+      save(); render(); return;
+    }
     else if (k === 'stravaAuto') S.settings.strava.autoPost = el.checked;
     else if (el.type === 'checkbox') S.settings[k] = el.checked;
     save();
@@ -4924,6 +5084,7 @@ if (navigator.storage && navigator.storage.persist) {
 
 applyTheme();
 render();
+rehaMorgenPushPlanen();   // Auftrag beim Öffnen erneuern bzw. stornieren
 stravaOAuthRueckkehr();
 maybeResumePrompt();
 setInterval(tick, 500);
