@@ -445,6 +445,13 @@ button.prog-chip:active { transform: scale(0.96); }
 /* Der Chip trägt jetzt Gewicht UND Wiederholungen; auf schmalen Geräten darf er
    umbrechen statt aus der Karte zu laufen. */
 .prog-chip { max-width: 100%; white-space: normal; text-align: left; padding-top: 6px; padding-bottom: 6px; }
+/* Zweizeilig, seit der Coach ALLE Arbeitssätze vorgibt: oben, was sich ändert —
+   darunter das Schema, das man gleich eintippt. Die zweite Zeile ist bewusst
+   kleiner und mit Tabellenziffern gesetzt: Sie wird gelesen wie eine Tabelle,
+   nicht wie ein Satz. */
+.prog-chip-2 { flex-direction: column; align-items: flex-start; gap: 1px; }
+.prog-chip-2 .prog-kopf { font-size: 15px; font-weight: 700; }
+.prog-chip-2 .prog-plan { font-size: 13px; font-weight: 600; opacity: 0.78; font-variant-numeric: tabular-nums; }
 .prog-row { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin: 0 0 var(--sp-2); }
 
 /* Satzzeile — das dichteste und meistberührte Element der App.
@@ -572,7 +579,11 @@ button.prog-chip:active { transform: scale(0.96); }
 }
 #timer-bar.over #timer-progress { background: var(--green); }
 .timer-row { display: flex; align-items: center; gap: 6px; margin-top: var(--sp-2); }
-#timer-text { flex: 1; min-width: 0; font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: -0.4px; line-height: 1.15; }
+/* Der Countdown ist eine Schaltflaeche (Pausenziel aendern), sieht aber aus wie
+   Text: Sein Zweck ist Ablesen, nicht Klicken — die Tippbarkeit ist Zugabe. */
+#timer-text { flex: 1; min-width: 0; font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: -0.4px; line-height: 1.15;
+  background: none; border: 0; padding: 0; margin: 0; text-align: left; color: inherit; font-family: inherit; min-height: var(--tap); }
+#timer-text:active { opacity: 0.6; }
 #timer-text small { display: block; font-size: 12px; color: var(--text-2); font-weight: 400; letter-spacing: 0; line-height: 1.3; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #timer-bar.over #timer-text { color: var(--green-ink); }
 #timer-bar.over .timer-row { animation: timer-pulse 400ms var(--ease-out); }
@@ -1752,3 +1763,18 @@ circle.chart-dot { stroke: var(--card); stroke-width: 2; }
 .reha-profil:active { opacity: 0.75; }
 .reha-profil .reha-kopf { gap: var(--sp-3); }
 .input-zeit { width: 104px; text-align: center; font-variant-numeric: tabular-nums; }
+
+/* Aufwärm-Rechner: Wahl der Rampenlänge (2 / 3 / 4 Sätze).
+   Segmentiert statt Dropdown — drei Optionen sind der Fall, für den ein
+   Segmented Control gebaut ist, und die Empfehlung bleibt dabei sichtbar,
+   statt hinter einem Menü zu verschwinden. */
+.wu-wahl { display: flex; gap: 6px; margin: var(--sp-2) 0 var(--sp-1); }
+.wu-wahl-btn {
+  flex: 1; min-height: var(--tap); border-radius: var(--r-md);
+  background: var(--fill); color: var(--text-2);
+  font-size: 14px; font-weight: 600; line-height: 1.15;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  transition: background var(--dur-2) var(--ease-out), color var(--dur-2) var(--ease-out);
+}
+.wu-wahl-btn small { font-size: 10px; font-weight: 600; opacity: 0.7; text-transform: uppercase; letter-spacing: 0.3px; }
+.wu-wahl-btn.on { background: var(--blue-soft); color: var(--blue-ink); }

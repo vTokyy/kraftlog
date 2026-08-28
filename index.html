@@ -14,7 +14,7 @@
   <title>Kraftlog — Krafttraining-Tracker</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
-  <link rel="stylesheet" href="style.css?v=41">
+  <link rel="stylesheet" href="style.css?v=42">
 </head>
 <body>
   <div id="app">
@@ -26,7 +26,10 @@
     <div id="timer-bar" class="hidden">
       <div id="timer-progress-track"><div id="timer-progress"></div></div>
       <div class="timer-row">
-        <div id="timer-text"></div>
+        <!-- Der Countdown ist selbst die Schaltflaeche: Tippen aendert das
+             Pausenziel. Bisher liess sich die Pause nur verlaengern (+30 s),
+             ein eigener Wert war nur ueber den Umweg Uebungen-Tab erreichbar. -->
+        <button id="timer-text" data-action="rest-ziel" aria-label="Pausenziel aendern"></button>
         <button class="btn btn-small" data-action="rest-plus">+30 s</button>
         <button class="btn btn-small" data-action="rest-skip">Skip</button>
         <button class="btn btn-small btn-primary" data-action="rest-done">Los!</button>
@@ -71,11 +74,11 @@
   <button id="wo-ruecksprung" class="hidden" data-action="wo-zurueck"></button>
   <div id="quer-hinweis">Kraftlog ist fürs Hochformat gemacht —<br>bitte dreh dein Handy zurück.</div>
 
-  <script src="exercises.js?v=41"></script>
-  <script src="icons.js?v=41"></script>
-  <script src="coach.js?v=41"></script>
-  <script src="charts.js?v=41"></script>
-  <script src="timer.js?v=41"></script>
-  <script src="app.js?v=41"></script>
+  <script src="exercises.js?v=42"></script>
+  <script src="icons.js?v=42"></script>
+  <script src="coach.js?v=42"></script>
+  <script src="charts.js?v=42"></script>
+  <script src="timer.js?v=42"></script>
+  <script src="app.js?v=42"></script>
 </body>
 </html>

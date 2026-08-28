@@ -43,13 +43,13 @@ Quellcode: `~/Desktop/Kraftlog-Quellcode/` (eigenes Git-Repo).
 | Datei | Zeilen | Rolle |
 |---|---|---|
 | `index.html` | 67 | Gerüst: einziger Render-Container `<main id="view">`, feste Timer-Bar, Tab-Bar (5 Tabs), Bottom-Sheet, Toast/Konfetti, Rücksprung-Button, Querformat-Sperre. Lädt die Skripte mit Cache-Buster `?v=23` in fester Reihenfolge. |
-| `style.css` | 507 | Design-Tokens als CSS-Variablen, dreifache Dark/Light-Mechanik, Safe-Area, Blur-Tab-Bar, max-width 560 px. |
+| `style.css` | 1780 | Design-Tokens als CSS-Variablen, dreifache Dark/Light-Mechanik, Safe-Area, Blur-Tab-Bar, max-width 560 px. |
 | `exercises.js` | 106 | Statische Übungsdatenbank: **77 Übungen**, 10 Muskelgruppen, 7 Equipment-Typen. |
 | `icons.js` | 63 | SVG-Übungskacheln: Hintergrundfarbe = Muskelgruppe (10 Farben), Piktogramm = Equipment. |
-| `coach.js` | 520 | Evidenzbasiertes Offline-Regelwerk: Pausen, Rep-Bereiche, Laststeigerung, Deload, Wochenvolumen-Ziele. Jede Empfehlung trägt Gewicht **und** Wiederholungsziel plus Umsetzungsschritte. |
+| `coach.js` | 1353 | Evidenzbasiertes Offline-Regelwerk: Pausen, Rep-Bereiche, Laststeigerung, **Satzzahl**, Deload, Wochenvolumen-Ziele, Reha-Modus, **4-Wochen-Periodisierung**. Jede Empfehlung trägt einen vollständigen Satzplan (kg und Wdh. je Arbeitssatz) plus Umsetzungsschritte. |
 | `charts.js` | 127 | Handgerollte SVG-Charts (`lineChart`, `barChart`), Farben nur über CSS-Variablen → Dark Mode automatisch. |
 | `timer.js` | 174 | Signal-Primitiven: Gong als Pausenende-Signal (Undertaker-Bell, MP3-Data-URI), WebAudio-Glocke als Rückfall, eingebettete WAV-Töne, Audio Session API, Vibration. |
-| `app.js` | 3336 | Die gesamte App-Engine (State, Rendering, Workout-Maschine, Import/Export, Strava, Push). |
+| `app.js` | 5526 | Die gesamte App-Engine (State, Rendering, Workout-Maschine, Import/Export, Strava, Push). |
 | `sw.js` | 68 | Service Worker: Precache (13 Dateien), cache-first, Push-Handler. |
 | `manifest.webmanifest` | 17 | PWA-Manifest (standalone, portrait, Icons inkl. maskable). |
 | `build.py` | 129 | Build: `.app` befüllen, Single-File-Artifact bauen, `--bump` synchronisiert `?v=N` und SW-Version, CSP-Sanity-Checks. |
@@ -113,6 +113,39 @@ Unberührt bleibt `repMin`/`repMax` für den Coach: die kommen weiter aus dem **
 nicht aus der Vorbelegung. Sonst würde eine einzelne gute Einheit den Boden dauerhaft
 anheben und eine spätere Normalleistung als „verfehlt" gelten.
 
+### Aufwärmsätze: 2, 3 oder 4 (ab v42)
+
+`WARMUP_RAMPEN` kennt drei Längen; `warmupSatzzahl(ex, targetKg)` **empfiehlt** eine,
+erzwingt sie aber nicht — die Auswahl steht als Segmented Control im Aufwärm-Sheet
+(Vorlagen-Editor wie Training), die Empfehlung ist dort markiert und begründet.
+
+| Rampe | Stufen | Empfohlen bei |
+|---|---|---|
+| 4 | 40 % ×10 · 60 % ×5 · 75 % ×3 · 88 % ×2 | große Muskelgruppe **und** ≥ 100 kg |
+| 3 | 50 % ×8 · 70 % ×4 · 85 % ×2 | große Muskelgruppe (Beine, Gesäß, Brust, Rücken) |
+| 2 | 50 % ×8 · 75 % ×4 | alles andere |
+
+Die Wiederholungen sinken, je näher es ans Arbeitsgewicht geht: Aufwärmen soll das
+Muster einschleifen und das Gewebe hochfahren, nicht Kraft kosten. Die 4er-Rampe hat
+deshalb eine zusätzliche Stufe **unten**, nicht vier lange Sätze. Die übrigen Regeln
+bleiben: nie unter der leeren Stange, nie auf oder über dem Arbeitsgewicht, streng
+aufsteigend, 2,5-kg-Raster. Abgedeckt durch `test-warmup.js`.
+
+### Pausenziel mitten im Training (ab v42)
+
+Vorher ließ sich eine laufende Pause nur **verlängern** (+30 s); ein eigener Wert je
+Übung war nur über den Umweg Übungen-Tab erreichbar. Jetzt zwei Wege:
+
+- **Übungsmenü im Training** → „Pausenziel: 3:30 min…" → Rad, dann *Immer für diese
+  Übung* (`S.exerciseSettings[exId].restSec`), *Nur dieses Training* (`wex.restSec`)
+  oder *auf automatisch zurücksetzen*.
+- **Tippen auf den laufenden Countdown** (`#timer-text` ist jetzt die Schaltfläche) →
+  Ziel der laufenden Pause ändern, optional gleich für die Übung merken. Ein noch
+  nicht erreichtes neues Ziel setzt `signaled` zurück, der Gong kommt also noch.
+
+Rangfolge in `restTarget()`: Satz-`restZiel` → Plan-/Tagesvorgabe (`wex.restSec`) →
+Übungs-Einstellung → **Periodisierungswoche** → Coach-/Pauschalwert.
+
 ### Coach-Vorschlag übernehmen (`vorschlagAufSaetze`)
 
 Der Chip `prog-apply` schrieb das Wiederholungsziel bis v36 in **alle** offenen
@@ -132,7 +165,15 @@ darf er sein. Leere Felder bekommen das Ziel als Startwert.
 | 8/8/6 @ 60 | 60 kg × 8 | 8/8/**6** @ 60 |
 | 8/8/6 @ 60 | 60 kg × 10 | 10/8/6 @ 60 |
 
-Abgedeckt durch `test-apply.js` (8 Fälle inkl. Aufwärm- und erledigter Sätze).
+**Ab v42 ist das der Rückfallweg.** Der Regelfall ist der vierte Parameter `plan`:
+Der Coach liefert für **jeden** Arbeitssatz ein eigenes `{ kg, reps }`, und die
+Zuordnung läuft positionsgenau über alle Arbeitssätze — abgehakte zählen mit, werden
+aber nie überschrieben. Hat der Plan mehr Sätze als die Übung (weil `satzZahl()` einen
+dazugelegt hat), werden sie **ergänzt**; überzählige bleiben stehen: Sätze wegzunehmen
+ist keine Entscheidung, die ein Tipp auf einen Vorschlag treffen sollte.
+
+Abgedeckt durch `test-apply.js` (13 Fälle inkl. Aufwärm- und erledigter Sätze,
+Satzplan kürzer/länger als die Übung).
 
 ### Abgehakte Sätze bleiben bearbeitbar (ab v38)
 
@@ -234,7 +275,9 @@ Altbestand ohne die neuen Felder).
     rehaPush: { aktiv: true, zeit: '08:00' }  // Erinnerung an den Morgen-Check
   },
   customExercises: [ { id: 'cu-…', name, mg, eq, compound } ],
-  exerciseSettings: { [exId]: { restSec?, notiz? } },      // Overrides pro Übung
+  exerciseSettings: { [exId]: { restSec?, notiz?,
+                       periode?: { aktiv, basis, saetze, reps, seit } } },   // Overrides pro Übung
+                                          // periode = 4-Wochen-Block, `seit` immer ein Montag
   templates: [ { id: 't-…', name, createdAt,
                  exercises: [ { exId, restSec|null,
                                 sets: [ { reps, kg?, warmup? } ] } ] } ],
@@ -248,7 +291,8 @@ Altbestand ohne die neuen Felder).
   bodyweight: [ { date: 'YYYY-MM-DD', kg } ],
   reha: { [muskelgruppe]: { aktiv, seit, stufe: 1..4, stufeSeit, basis: 0..10 } },
   rehaLog: [ { ts, mg, typ: 'uebung'|'morgen', wert: 0..10, exId|null, workoutId|null } ],
-  rehaInit: false        // Erstbelegung (Beine an) ist gelaufen
+  rehaInit: false,       // Erstbelegung (Beine an) ist gelaufen
+  periodInit: false      // Erstbelegung der Periodisierung (Bankdrücken) ist gelaufen
 }
 ```
 
@@ -451,7 +495,63 @@ trägt. Das war die Ursache der unbrauchbaren Vorschläge bei leichten Übungen.
 Zeit-/Strecken-Übungen (Plank, Farmer's Walk) sind per `hint` ausgenommen
 („Manuell steigern").
 
-**Form einer Empfehlung:** `{ typ, kg, reps, text, grund, hinweis }`.
+### Satzzahl und Satzvorgabe (ab v42)
+
+Bis v41 hat der Coach die Satzzahl **nicht bewertet**: `ws.length` floss nur in den
+Text („Unverändert 3 Sätze"). Zwei Folgen davon:
+
+1. Der Volumenvergleich lief über die **Rohsumme** der Wiederholungen. Vier Sätze
+   statt drei sahen wie Fortschritt aus, drei statt vier wie ein Einbruch — und
+   `volumenBricht` bremste dann die Steigerung. Jetzt wird **pro Satz** verglichen
+   (`wdhProSatz`).
+2. Es gab keinen Weg, Volumen als Überlastung zu nutzen.
+
+Die Satzzahl ist jetzt eine eigene Achse (`satzZahl()`). Sie steigt um **einen**
+Satz, wenn **alle** Bedingungen gleichzeitig gelten:
+
+- die Lastachse gibt nichts her (`typ` ist `wdh` oder `halten`),
+- die Last steht seit **zwei** Einheiten,
+- die Satzzahl war in beiden Einheiten **gleich** (ergibt von selbst Enes' Rhythmus
+  „alle zwei Wochen ein Satz mehr" statt einer Rampe),
+- der Wiederholungsabfall liegt im 25-%-Band,
+- `wochenSaetze + 1 ≤ VOLUMEN[mg].max` und Satzzahl < `SATZ_MAX_UEBUNG` (= 5).
+
+Beim `plus` und beim `deload` bleibt sie stehen — eine Stellschraube je Einheit,
+sonst ist ein Rückschlag nicht auswertbar.
+
+**Jede Empfehlung trägt jetzt einen vollständigen Satzplan** (`satzplan()`), nicht
+mehr nur ein Top-Satz-Ziel. Die Wiederholungen der hinteren Sätze kommen aus dem
+**eigenen** Abfall der letzten Einheit (`satzRate()`, geometrisch je Satz), gedeckelt
+auf höchstens 15 % je Satz und nie unter 75 % des ersten Satzes. Ohne Historie greift
+8 % je Satz — der oft zitierte Wert „zweiter Satz = 70 % des ersten" stammt aus Sätzen
+**bis ans Versagen** mit kurzen Pausen und ist hier der falsche Bezug.
+
+`flach: true` erzwingt gleiche Wiederholungen in allen Sätzen. Das gilt für Deloads,
+für die Einheit, in der die Sätze zusammengeholt werden, für alle Reha-Vorgaben und
+für die Periodisierung. Flache Pläne umgehen zusätzlich die „kein Rückschritt"-Regel:
+Dort ist die niedrigere Vorgabe der Zweck.
+
+`kontext` (6. Parameter von `empfehlung()`) liefert `sessionSaetze`, `wochenSaetze`
+und `einheiten`; er kommt aus `coachKontext()` in app.js.
+
+### Eine Regel für den Gewichtssprung (ab v42)
+
+Vorher bremste ein Satzabfall nur, wenn er **neu** und über **40 %** war. Ein Abfall
+von 30 % ging durch, ein gleich großer an anderer Stelle nicht — daher der Eindruck,
+der Trainer sei unstimmig. Jetzt gilt überall dasselbe: Der Sprung braucht
+**(1) nachgewiesene Reserve** und **(2) Sätze im 25-%-Band**. Einzige Ausnahme, und
+sie ist selbst eine Regel: Liegt der Abfall **zwei Einheiten in Folge** außerhalb des
+Bandes, ist er die Arbeitsweise und bremst nicht mehr.
+
+Zweiter Teil derselben Unstimmigkeit: **RPE wird am LETZTEN Satz mit der Top-Last
+abgelesen** (`letzterMitLast()`), nicht am ersten. RPE 8 im frischen ersten Satz
+reichte vorher für den Nachweis, obwohl der letzte Satz am Limit lag — das war das
+„sobald ich 6 Wiederholungen geschafft habe, geht es hoch". Fehlt dort ein Wert, gilt
+ersatzweise der des Top-Satzes.
+
+**Form einer Empfehlung:** `{ typ, kg, reps, saetze, plan, planText, text, grund, hinweis }`.
+`plan` ist die Liste `[{ kg, reps }]` über **alle** Arbeitssätze; `planText` ist die
+zweite Zeile des Chips („4 × 105 kg · 4/4/4/4 Wdh.").
 
 - `text` ist der Chip im Training und nennt **immer Gewicht und Wiederholungsziel**
   („Deload: 72,5 kg × 10 Wdh. (−9 %)"). Eine nackte kg-Zahl ließ offen, woran man
@@ -473,6 +573,41 @@ du legst die Schrittgröße selbst fest, nicht: die Beurteilung darf falsch sein
 Er nutzt deshalb dieselbe Bewertungslogik: Top-Satz statt schwächstem Satz und
 Reserve-Nachweis (RPE oder zweite Einheit) vor dem Sprung.
 
+### Periodisierung (`periodEmpfehlung`, ab v42)
+
+Der reaktive Coach kennt keinen **geplanten** Ermüdungsauf- und -abbau — genau den
+braucht man vor einem Rekordversuch. Deshalb je Übung optional ein 4-Wochen-Block:
+
+| Woche | Last | Schema | RPE (letzter Satz) | Pause |
+|---|---|---|---|---|
+| 1 Einstieg | Basis | n × r | 7,5–8 | Coach-Pause + 30 s |
+| 2 Steigerung | Basis + 1 Schritt | n × r | 8,5 | Coach-Pause + 30 s |
+| 3 Peak | Basis + 2 Schritte | n × r | 9–9,5 | Coach-Pause + 90 s |
+| 4 Deload | ~85 % der Peak-Last | (n−1) × (r−1) | 6–7 | Coach-Pause − 30 s |
+
+Der „Schritt" ist **kein** fester Prozentwert, sondern derselbe `schritt()`, den der
+Coach auch sonst rechnet. Für Bankdrücken (Oberkörper-Grundübung, 2,5 %) bei 105 kg
+ergibt das 105 / 107,5 / 110 / 92,5 kg.
+
+Von Block zu Block wandert die Basis um genau einen Schritt nach oben. **Woche und
+Block werden allein aus `seit` gerechnet** und nirgends gespeichert: Ein Zustand, der
+nur beim Trainieren fortgeschrieben wird, steht nach zwei Wochen Pause falsch da.
+
+Die einzige Rückkopplung: In Woche 2 und 3 wird nur gesteigert, wenn die **Vorwoche
+vollständig** stand (`periodErfuellt()` — alle vorgegebenen Wiederholungen bei
+mindestens der vorgegebenen Last, beste Einheit der Woche zählt). Sonst bleibt die
+Last der Vorwoche stehen und der Vorschlag sagt warum.
+
+**Rangfolge der drei Regelwerke:** Reha > Periodisierung > reaktiver Coach. Reha
+schützt Gewebe und darf von nichts überstimmt werden; ein Block ist die
+ausdrücklichere Ansage als die Einheit-für-Einheit-Bewertung.
+
+Zustand: `S.exerciseSettings[exId].periode = { aktiv, basis, saetze, reps, seit }`.
+`seit` ist immer ein Montag (`wochenStart()`). Eingeschaltet wird je Übung im
+Übungen-Tab; ab Werk läuft genau ein Block: Bankdrücken (Langhantel), 105 kg, 4 × 4.
+Die Wochenpause wirkt über `restTarget()` — eine von Hand gesetzte Übungspause hat
+weiterhin Vorrang.
+
 **Wochenvolumen-Ziele** (direkte Arbeitssätze/Woche): Brust 12–18, Rücken 14–20,
 Schultern 12–20, Bizeps 10–16, Trizeps 8–12, Beine 14–26, Gesäß 8–14, Bauch/Core 10–16,
 Waden 0–16, Unterarme 0–12 (min 0 = optional, nur Obergrenze geprüft).
@@ -490,6 +625,12 @@ Waden 0–16, Unterarme 0–12 (min 0 = optional, nur Obergrenze geprüft).
 | Velocity-Loss-Reviews (Held et al. 2022 u. a.) | ~20–25 % Leistungsverlust als Ermüdungsgrenze → Schwellen der Abfall-Achse |
 | Halperin et al. 2022 | RIR-Schätzungen nur nahe am Versagen belastbar → RIR-Deckel bei 5, RPE nie Voraussetzung |
 | ACSM Position Stand 2009 | Steigerungsschritt 2–10 % |
+| Pelland et al. 2026, *Sports Med* 56:481–505 | Dosis-Wirkung Wochenvolumen: mehr Sätze = mehr Zuwachs, mit abnehmendem Grenznutzen → Satzzahl ist eine Progressionsachse, aber keine unbegrenzte |
+| Enes et al. 2024, *MSSE* 56(3):553–63 · Enes et al. 2025, *J Sports Sci* 43(4):381–92 | Planmäßiges Satz-Hinzufügen schlägt konstantes Volumen → `satzZahl()` erhöht um einen Satz, im Zwei-Einheiten-Rhythmus |
+| Remmert et al. 2025 (SportRxiv) | Sättigung des Satzvolumens je Einheit (~11 fractional sets je Muskelgruppe) → `SATZ_MAX_UEBUNG = 5` |
+| Chaves et al. 2024, *Int J Sports Med* 45(7):504–10 | Last- und Wiederholungssteigerung gleichwertig (bestätigt Plotkin 2022) |
+| Rhea & Alderman 2004 · Williams et al. 2017 | Periodisierte Programme schlagen nicht-periodisierte in der Maximalkraft → 4-Wochen-Block |
+| Bosquet et al. 2007, *MSSE* 39:1358–65 | Tapering: Umfang senken, Intensität halten → Entlastungswoche bei ~85 % und reduziertem Umfang |
 
 ## 9b. Reha-Modus (ab v40)
 

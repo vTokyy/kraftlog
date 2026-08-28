@@ -82,7 +82,8 @@ function defaults() {
     bodyweight: [],
     reha: {},        // Reha-Modus je Muskelgruppe — aus, bis er eingeschaltet wird
     rehaLog: [],     // Schmerz- und Morgen-Rückmeldungen
-    rehaInit: false  // Erstbelegung (Beine) schon gelaufen?
+    rehaInit: false, // Erstbelegung (Beine) schon gelaufen?
+    periodInit: false // Erstbelegung der Periodisierung (Bankdrücken) schon gelaufen?
   };
 }
 /* Typen absichern: kaputte/fremde Importe dürfen die App nie unbenutzbar machen */
@@ -94,6 +95,20 @@ function sanitizeState(s) {
   if (!Array.isArray(s.bodyweight)) s.bodyweight = d.bodyweight;
   if (!Array.isArray(s.runs)) s.runs = d.runs;
   if (!s.exerciseSettings || typeof s.exerciseSettings !== 'object' || Array.isArray(s.exerciseSettings)) s.exerciseSettings = d.exerciseSettings;
+  /* Periodisierung je Übung absichern: Ein kaputter Block darf keine Empfehlung
+     in undefinierte Wochen schicken. Kein Basisgewicht = kein Block. */
+  Object.keys(s.exerciseSettings).forEach(id => {
+    const o = s.exerciseSettings[id];
+    if (!o || typeof o !== 'object') { delete s.exerciseSettings[id]; return; }
+    const per = o.periode;
+    if (!per || typeof per !== 'object') { delete o.periode; return; }
+    per.aktiv = per.aktiv === true;
+    per.basis = +per.basis > 0 ? Math.round(+per.basis * 100) / 100 : null;
+    per.saetze = Math.min(5, Math.max(1, Math.round(+per.saetze || 4)));
+    per.reps = Math.min(20, Math.max(1, Math.round(+per.reps || 4)));
+    if (typeof per.seit !== 'number' || !(per.seit > 0)) per.seit = Date.now();
+    if (!per.basis) per.aktiv = false;
+  });
   if (!s.wochenplan || typeof s.wochenplan !== 'object' || Array.isArray(s.wochenplan)) s.wochenplan = d.wochenplan;
   if (!s.settings || typeof s.settings !== 'object') s.settings = d.settings;
   /* Reha-Zustand absichern: fremde/alte Importe kennen ihn nicht, und ein
@@ -174,7 +189,26 @@ function migrate(s) {
       s.reha['Beine'] = { aktiv: true, seit: jetzt, stufe: 2, stufeSeit: jetzt, basis: 0 };
     }
   }
+  /* Einmalige Erstbelegung der Periodisierung: Bankdrücken (Langhantel) startet
+     einen 4-Wochen-Block bei 105 kg mit 4 × 4. Läuft genau einmal — wer den
+     Block danach abschaltet, bekommt ihn nicht zurück. */
+  if (!s.periodInit) {
+    s.periodInit = true;
+    const id = 'bankdruecken-lh';
+    const o = s.exerciseSettings[id] || (s.exerciseSettings[id] = {});
+    if (!o.periode) {
+      o.periode = { aktiv: true, basis: 105, saetze: 4, reps: 4, seit: wochenStart(Date.now()) };
+    }
+  }
   return s;
+}
+/* Montag 00:00 der Woche, in der `ts` liegt. Ein Block beginnt am Wochenanfang,
+   nicht am Tag des Einschaltens — sonst läuft „Woche 2" mitten in der Woche an. */
+function wochenStart(ts) {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  const wt = (d.getDay() + 6) % 7;   // 0 = Montag
+  return d.getTime() - wt * 86400000;
 }
 function load() {
   try {
@@ -256,7 +290,35 @@ function restTarget(exId, tplRest) {
   if (tplRest) return tplRest;
   const o = S.exerciseSettings[exId];
   if (o && o.restSec) return o.restSec;
+  /* Läuft für diese Übung ein Periodisierungsblock, gibt die Woche die Pause vor:
+     In der Peak-Woche trägt die Last sonst nicht durch alle Sätze, in der
+     Entlastungswoche braucht sie keine vier Minuten. Eine von Hand gesetzte
+     Übungspause hat trotzdem Vorrang — sie ist die ausdrücklichere Ansage. */
+  const pw = periodWoche(exId);
+  if (pw) return pw.pause;
   return pauseStandard(exId);
+}
+
+/* ---------- Periodisierung (4-Wochen-Block je Übung) ----------
+ * Zustand: S.exerciseSettings[exId].periode = { aktiv, basis, saetze, reps, seit }
+ * `seit` ist der Beginn von Woche 1 des ERSTEN Blocks. Alles andere — laufender
+ * Block, laufende Woche, Lasten — wird daraus gerechnet und nirgends gespeichert.
+ * Das ist Absicht: Ein Zustand, der nur beim Trainieren fortgeschrieben wird,
+ * steht nach zwei Wochen Pause falsch da. */
+function periodFuer(exId) {
+  if (S.settings.coach === false) return null;
+  const o = S.exerciseSettings[exId];
+  const p = o && o.periode;
+  return (p && p.aktiv === true && p.basis > 0) ? p : null;
+}
+/* Die laufende Woche als fertiger Datensatz — oder null. */
+function periodWoche(exId) {
+  const p = periodFuer(exId);
+  if (!p) return null;
+  const stand = Coach.periodStand(p, Date.now());
+  const wochen = Coach.periodWochen(exById(exId), p, stand.block);
+  if (!wochen) return null;
+  return Object.assign({ block: stand.block, stand: stand, alle: wochen }, wochen[stand.woche - 1]);
 }
 
 /* Pausenziel eines EINZELNEN Satzes — gibt null zurück, wenn nach diesem Satz
@@ -406,6 +468,10 @@ function allPrEvents() {
   return events;
 }
 
+/* Im Aufwärm-Sheet gewählte Satzzahl. null = der Empfehlung folgen, die sich mit
+   dem eingegebenen Arbeitsgewicht noch ändern kann. */
+let wuAnzahl = null;
+
 /* ---------- Aufwärmsätze berechnen ----------
  * Kurze Rampe in Prozent des Arbeitsgewichts, mit weniger Wdh. je schwerer:
  * Gewebe und Nervensystem hochfahren und das Bewegungsmuster einschleifen, ohne
@@ -419,14 +485,32 @@ function allPrEvents() {
  * Nie auf oder über dem Arbeitsgewicht, gerundet auf 2,5-kg-Schritte.
  * Rückgabe: [{ kg, reps }] (aufsteigend). */
 const WARMUP_GROSS = ['Beine', 'Gesäß', 'Brust', 'Rücken'];
+/* Drei Rampenlängen. Die Wiederholungen sinken, je näher es ans Arbeitsgewicht
+   geht — Aufwärmen soll das Muster einschleifen und das Gewebe hochfahren, nicht
+   Kraft für die Arbeitssätze verbrauchen. Die 4er-Rampe hat deshalb eine
+   ZUSÄTZLICHE Stufe unten und oben je einen kurzen Satz, keine vier langen. */
 const WARMUP_RAMPEN = {
+  4: [[0.40, 10], [0.60, 5], [0.75, 3], [0.88, 2]],
   3: [[0.50, 8], [0.70, 4], [0.85, 2]],
   2: [[0.50, 8], [0.75, 4]]
 };
-function warmupSatzzahl(ex) {
-  return (ex && WARMUP_GROSS.indexOf(ex.mg) >= 0) ? 3 : 2;
+const WARMUP_ANZAHLEN = [2, 3, 4];
+/* Empfehlung, nicht Vorschrift: Der Weg vom Startgewicht bis oben ist bei großen
+   Muskelgruppen und schweren Lasten weiter, also braucht er mehr Zwischenstufen.
+   Ab 100 kg lohnt die vierte Stufe auch bei kleineren Gruppen — dort liegen
+   zwischen 50 % und 100 % über 50 kg Unterschied. */
+function warmupSatzzahl(ex, targetKg) {
+  const gross = !!(ex && WARMUP_GROSS.indexOf(ex.mg) >= 0);
+  if (gross && targetKg > 0 && targetKg >= 100) return 4;
+  return gross ? 3 : 2;
 }
-function computeWarmup(targetKg, ex) {
+function warmupGrund(ex, targetKg) {
+  const n = warmupSatzzahl(ex, targetKg);
+  if (n === 4) return 'Empfehlung: 4 Sätze — schwere Last (' + fmtKg(targetKg) + ' kg) auf einer großen Muskelgruppe. Der Weg von unten nach oben ist zu weit für drei Stufen.';
+  if (n === 3) return 'Empfehlung: 3 Sätze — große Muskelgruppe (' + esc(ex.mg) + '), hohe Last, weiter Weg bis zum Arbeitsgewicht.';
+  return 'Empfehlung: 2 Sätze — kleinere Muskelgruppe (' + esc(ex.mg) + '), kurzer Weg. Mehr Rampensätze kosten hier nur Kraft für die Arbeitssätze.';
+}
+function computeWarmup(targetKg, ex, anzahl) {
   const out = [];
   targetKg = +targetKg;
   if (!(targetKg > 0)) return out;
@@ -438,15 +522,26 @@ function computeWarmup(targetKg, ex) {
     if (out.length && kg <= out[out.length - 1].kg) return; // streng aufsteigend
     out.push({ kg, reps });
   };
-  for (const [pct, reps] of WARMUP_RAMPEN[warmupSatzzahl(ex)]) {
+  const n = WARMUP_RAMPEN[anzahl] ? anzahl : warmupSatzzahl(ex, targetKg);
+  for (const [pct, reps] of WARMUP_RAMPEN[n]) {
     let w = round(targetKg * pct);
     if (isBar) w = Math.max(w, barKg);
     push(w, reps);
   }
   return out;
 }
-function warmupPreviewHtml(exId, targetKg) {
-  const sets = computeWarmup(targetKg, exById(exId));
+/* Auswahlleiste 2 / 3 / 4 mit markierter Empfehlung. */
+function warmupWahlHtml(exId, targetKg, gewaehlt) {
+  const ex = exById(exId);
+  const emp = warmupSatzzahl(ex, targetKg);
+  const akt = WARMUP_RAMPEN[gewaehlt] ? gewaehlt : emp;
+  return '<div class="wu-wahl">' + WARMUP_ANZAHLEN.map(n =>
+    '<button class="wu-wahl-btn' + (n === akt ? ' on' : '') + '" data-action="wu-anzahl" data-n="' + n + '">' +
+    n + ' Sätze' + (n === emp ? '<small>empfohlen</small>' : '') + '</button>').join('') + '</div>' +
+    '<div class="mini-note">' + warmupGrund(ex, targetKg) + '</div>';
+}
+function warmupPreviewHtml(exId, targetKg, anzahl) {
+  const sets = computeWarmup(targetKg, exById(exId), anzahl);
   if (!sets.length) return '<div class="chart-leer">Gib dein Arbeitsgewicht ein</div>';
   return '<div class="wu-list">' + sets.map((s, i) =>
     '<div class="hist-set"><span class="hs-n">A' + (i + 1) + '</span>' +
@@ -455,11 +550,109 @@ function warmupPreviewHtml(exId, targetKg) {
     '<span class="hs-main">' + fmtKg(targetKg) + ' kg (Arbeitsgewicht)</span></div></div>';
 }
 
+/* Ein Feld der Periodisierung schreiben. Steht als eigene Funktion da, weil ein
+   Kontrollkästchen sowohl `input` als auch `change` auslöst — beide Wege landen
+   hier und dürfen sich nicht ins Gehege kommen. */
+function periodFeldSetzen(el) {
+  const o = S.exerciseSettings[el.dataset.id] || (S.exerciseSettings[el.dataset.id] = {});
+  const per = o.periode || (o.periode = { aktiv: false, basis: null, saetze: 4, reps: 4, seit: wochenStart(Date.now()) });
+  const feld = el.dataset.exper;
+  if (feld === 'aktiv') {
+    const an = el.checked === true;
+    if (an === per.aktiv) return;
+    per.aktiv = an;
+    /* Beim Einschalten den Block auf den Anfang DIESER Woche legen und, falls
+       noch kein Startgewicht steht, den letzten Top-Satz vorschlagen — sonst
+       stünde da ein leeres Feld, mit dem der Block nicht laufen kann. */
+    if (an) {
+      per.seit = wochenStart(Date.now());
+      if (!(per.basis > 0)) {
+        const last = lastSessionFor(el.dataset.id);
+        const top = last ? topSet(workingSets(last.wex)) : null;
+        per.basis = (top && top.kg > 0) ? top.kg : null;
+      }
+      if (!(per.basis > 0)) { per.aktiv = false; showToast('Erst ein Startgewicht eintragen'); }
+    }
+    save();
+    render();
+    return;
+  }
+  if (feld === 'basis') {
+    const v = parseNum(el.value);
+    per.basis = (v && v > 0) ? v : null;
+    if (!per.basis) per.aktiv = false;
+  } else {
+    const v = parseInt(el.value, 10);
+    if (v > 0) per[feld] = Math.min(feld === 'saetze' ? Coach.SATZ_MAX_UEBUNG : 20, v);
+  }
+  saveSoon();
+}
+
+/* Periodisierung in den Übungs-Einstellungen: Schalter, drei Zahlen, Blockplan.
+   Mehr braucht es nicht — Wochen, Lasten und Pausen ergeben sich daraus. */
+function periodEinstellungHtml(ex) {
+  const per = (S.exerciseSettings[ex.id] || {}).periode || {};
+  const an = per.aktiv === true && per.basis > 0;
+  let h = '<div class="section-title">Periodisierung</div>' +
+    '<div class="setting-row"><div class="li-main"><div class="li-title li-title-sm">4-Wochen-Block</div>' +
+    '<div class="li-sub">Drei Wochen steigende Belastung, eine Entlastungswoche. Ersetzt für diese Übung die Einheit-für-Einheit-Bewertung.</div></div>' +
+    '<label class="switch"><input type="checkbox" data-exper="aktiv" data-id="' + esc(ex.id) + '"' + (per.aktiv === true ? ' checked' : '') + '><span class="knob"></span></label></div>';
+  if (per.aktiv !== true) {
+    h += '<div class="mini-note">Aus. Der Coach bewertet diese Übung weiter nach der letzten Einheit — das ist für den Alltag richtig. ' +
+      'Ein Block lohnt sich, wenn ein Rekordversuch ansteht: Er baut Ermüdung planmäßig auf und in der vierten Woche wieder ab.</div>';
+    return h;
+  }
+  h += '<div class="setting-row"><div class="li-main"><div class="li-title li-title-sm">Startgewicht Woche 1</div>' +
+    '<div class="li-sub">Arbeitsgewicht, mit dem der erste Block beginnt</div></div>' +
+    '<input class="input-mini" inputmode="decimal" value="' + (per.basis != null ? fmtInput(per.basis) : '') + '" data-exper="basis" data-id="' + esc(ex.id) + '"><span class="li-sub">kg</span></div>' +
+    '<div class="setting-row"><div class="li-main"><div class="li-title li-title-sm">Arbeitssätze</div>' +
+    '<div class="li-sub">gleich in Woche 1–3, in der Entlastungswoche einer weniger</div></div>' +
+    '<input class="input-mini" inputmode="numeric" value="' + (per.saetze || 4) + '" data-exper="saetze" data-id="' + esc(ex.id) + '"></div>' +
+    '<div class="setting-row"><div class="li-main"><div class="li-title li-title-sm">Wiederholungen je Satz</div>' +
+    '<div class="li-sub">gleich in Woche 1–3, in der Entlastungswoche eine weniger</div></div>' +
+    '<input class="input-mini" inputmode="numeric" value="' + (per.reps || 4) + '" data-exper="reps" data-id="' + esc(ex.id) + '"></div>';
+  if (!an) {
+    h += '<div class="mini-note">Trag ein Startgewicht ein, dann steht der Blockplan hier.</div>';
+    return h;
+  }
+  const pw = periodWoche(ex.id);
+  if (!pw) return h;
+  h += '<div class="card" style="padding:10px 14px">' +
+    '<div class="li-sub" style="margin-bottom:2px">Block ' + pw.block + ' · läuft seit ' + fmtDatumLang(per.seit) + '</div>' +
+    pw.alle.map(w => '<div class="hist-set' + (w.woche === pw.woche ? ' hist-set-sum' : '') + '">' +
+      '<span class="hs-n">W' + w.woche + '</span>' +
+      '<span class="hs-main hs-main-flex">' + esc(w.name) + '</span>' +
+      '<span class="hs-sub">' + fmtKg(w.kg) + ' kg · ' + w.saetze + '×' + w.reps + ' · RPE ' +
+      (w.rpeVon === w.rpeBis ? fmtKg(w.rpeVon) : fmtKg(w.rpeVon) + '–' + fmtKg(w.rpeBis)) +
+      ' · Pause ' + fmtMinSek(w.pause) + '</span></div>').join('') +
+    '</div>' +
+    '<div class="mini-note">Du bist in <b>Woche ' + pw.woche + ' — ' + esc(pw.name) + '</b> (' + esc(pw.kurz) + '). ' +
+    'Die Woche wechselt automatisch am ' + fmtDatumLang(pw.stand.wocheEnde) + '. ' +
+    'Die Sprünge zwischen den Wochen sind keine gerundeten Wunschwerte, sondern derselbe Steigerungsschritt, den der Coach auch sonst rechnet.</div>' +
+    '<button class="btn btn-block" data-action="period-neustart" data-id="' + esc(ex.id) + '">Block ab dieser Woche neu starten</button>' +
+    '<div class="mini-note">' + esc(Coach.PERIOD_QUELLEN) + '</div>';
+  return h;
+}
+
 /* ---------- Progressionsvorschlag ---------- */
+/* Alles, was der Coach über den Rahmen wissen muss, in dem eine Übung steht:
+   wie viele Arbeitssätze heute geplant sind, wie viele Sätze die Muskelgruppe in
+   der Woche schon bekommt, und die datierte Historie für die Periodisierung.
+   Ohne das könnte er die Satzzahl nicht beurteilen — und genau das hat er
+   vorher auch nicht getan. */
+function coachKontext(exId, wex) {
+  const ex = exById(exId);
+  const vol = wochenplanVolumen();
+  return {
+    sessionSaetze: wex ? wex.sets.filter(x => !x.warmup).length : null,
+    wochenSaetze: vol[ex.mg] != null ? vol[ex.mg] : null,
+    einheiten: sessionsFor(exId).map(({ w, wex: we }) => ({ ts: w.startedAt, ws: workingSets(we) }))
+  };
+}
 function repRangeText(repMin, repMax) {
   return (repMin === repMax) ? (repMin + ' Wdh.') : (repMin + '–' + repMax + ' Wdh.');
 }
-function progressionFor(exId, repMin, repMax) {
+function progressionFor(exId, repMin, repMax, wex) {
   const ex = exById(exId);
   /* Zeit-/Strecken-Übungen (Plank, Farmer's Walk …): Wdh.-Feld enthält Sekunden/Meter —
      die Wiederholungs-Logik würde Unsinn empfehlen. */
@@ -474,6 +667,20 @@ function progressionFor(exId, repMin, repMax) {
   repMin = repMin || (coachAn ? k.repMin : 8);
   repMax = repMax || (coachAn ? k.repMax : 12);
   const sess = sessionsFor(exId);
+  const ktx = coachKontext(exId, wex);
+  /* Rangfolge der drei Regelwerke, und sie ist begründet:
+     Reha  > Periodisierung > reaktiver Coach.
+     Der Reha-Modus schützt Gewebe und darf deshalb von nichts überstimmt werden.
+     Läuft er nicht, ist ein Periodisierungsblock die ausdrücklichere Ansage als
+     die Einheit-für-Einheit-Bewertung: Wer einen Block fährt, will die geplante
+     Ermüdung — sonst wäre es kein Block. */
+  if (coachAn && !rehaExAktiv(ex)) {
+    const per = periodFuer(exId);
+    if (per) {
+      const r = Coach.periodEmpfehlung(ex, per, ktx, Date.now());
+      if (r) return r;
+    }
+  }
   if (!sess.length) {
     const rh = coachAn ? rehaExAktiv(ex) : null;
     if (rh) {
@@ -506,15 +713,21 @@ function progressionFor(exId, repMin, repMax) {
      grüne Ampel aus Schmerz und Morgen-Check. Läuft für die Muskelgruppe kein
      Reha-Modus (z. B. Waden), passiert hier gar nichts. */
   if (coachAn && rehaExAktiv(ex)) {
-    return Coach.rehaEmpfehlung(ex, ws, wsDavor, repMin, repMax, rehaWerte(ex.mg));
+    return Coach.rehaEmpfehlung(ex, ws, wsDavor, repMin, repMax, rehaWerte(ex.mg), ktx);
   }
-  if (coachAn) return Coach.empfehlung(ex, ws, wsDavor, repMin, repMax);
+  if (coachAn) return Coach.empfehlung(ex, ws, wsDavor, repMin, repMax, ktx);
   /* Klassik-Modus (Coach aus): eigene Steigerungsschritte aus den Einstellungen,
      aber dieselbe Bewertungslogik wie im Coach. „Klassik" heißt hier: du legst
      die Schrittgröße selbst fest — nicht: die Beurteilung darf falsch sein.
      Deshalb auch hier Top-Satz statt schwächstem Satz (der Wiederholungsabfall
      über die Sätze ist Ermüdung, kein Lastsignal) und Bestätigung vor dem
      Sprung statt "einmal getroffen reicht". */
+  return Coach.satzplan(klassik(), ex, ws, wsDavor, ktx);
+
+  /* Der Klassik-Zweig als eigene Funktion, damit auch hier JEDER Ausgang durch
+     die Satzvorgabe läuft — sonst hinge die Vollständigkeit der Vorgabe daran,
+     ob der Coach an ist. */
+  function klassik() {
   const inc = (ex.compound && (ex.mg === 'Beine' || ex.mg === 'Gesäß')) ? S.settings.incLower : S.settings.incUpper;
   const top = Coach.topSatz(ws);
   const topKg = top.kg || 0;
@@ -561,6 +774,7 @@ function progressionFor(exId, repMin, repMax) {
   }
   const zielReps = Math.min(topReps + 1, repMax);
   return { typ: 'wdh', kg: topKg, reps: zielReps, text: fmtKg(topKg) + ' kg × ' + zielReps + ' Wdh. anpeilen' };
+  }
 }
 
 /* ---------- Reha-Modus ----------
@@ -1472,7 +1686,7 @@ function renderExCard(wex, xi) {
   } else {
     h += '<div class="lastmal">Erste Einheit mit dieser Übung — such dir ein Gewicht, mit dem du die Wiederholungen sauber schaffst.</div>';
   }
-  const prog = progressionFor(wex.exId, wex.repMin, wex.repMax);
+  const prog = progressionFor(wex.exId, wex.repMin, wex.repMax, wex);
   const warum = prog.grund ? '<button class="linklike linklike-sm" data-action="prog-warum" data-ex="' + xi + '">Warum?</button>' : '';
   if (prog.typ === 'neu') {
     h += '<div class="prog-row"><span class="prog-chip neutral">' + esc(prog.text) + '</span>' + warum + '</div>';
@@ -1481,8 +1695,14 @@ function renderExCard(wex, xi) {
        Gewicht senkt — das darf nicht wie ein normales „halten" aussehen. */
     const cls = prog.typ === 'plus' ? ''
       : (prog.typ === 'deload' ? 'deload' : (prog.typ === 'halten' ? 'halten' : 'neutral'));
+    /* Zwei Zeilen: oben, was sich ändert — darunter, was konkret dasteht.
+       Die zweite Zeile ist der eigentliche Grund für den Umbau: „72,5 kg × 6"
+       ließ offen, was in Satz 2 und 3 stehen soll. */
     h += '<div class="prog-row">' +
-      '<button class="prog-chip ' + cls + '" data-action="prog-apply" data-ex="' + xi + '" data-kg="' + prog.kg + '"' + (prog.reps ? ' data-reps="' + prog.reps + '"' : '') + '>' + esc(prog.text) + '</button>' + warum + '</div>';
+      '<button class="prog-chip ' + cls + (prog.planText ? ' prog-chip-2' : '') + '" data-action="prog-apply" data-ex="' + xi + '">' +
+      '<span class="prog-kopf">' + esc(prog.text) + '</span>' +
+      (prog.planText ? '<span class="prog-plan">' + esc(prog.planText) + '</span>' : '') +
+      '</button>' + warum + '</div>';
   }
   /* Rückmeldungs-Zeile: erscheint, sobald ein Arbeitssatz steht. Vorher gibt es
      nichts zu bewerten, hinterher ist sie der wichtigste Eintrag der Übung. */
@@ -1671,7 +1891,28 @@ function satzVorgabe(z, ref) {
    Ziel: kein späterer Satz darf über dem ersten stehen (bei gleicher Last ist
    das physiologisch unplausibel), aber niedriger darf er sein. Leere Felder
    bekommen das Ziel als Startwert. */
-function vorschlagAufSaetze(sets, kg, reps) {
+function vorschlagAufSaetze(sets, kg, reps, plan) {
+  /* Mit Satzplan (der Normalfall, seit der Coach alle Arbeitssätze vorgibt):
+     Jeder Arbeitssatz bekommt seine eigene Vorgabe, positionsgenau. Abgehakte
+     Sätze zählen bei der Zuordnung mit, werden aber nie überschrieben — sie sind
+     bereits Geschichte. Fehlen Sätze, weil der Coach einen dazugelegt hat,
+     werden sie ergänzt; überzählige bleiben stehen: Sätze wegzunehmen ist eine
+     Entscheidung, die niemand per Tipp auf einen Vorschlag treffen sollte. */
+  if (plan && plan.length) {
+    let ai = 0;
+    sets.forEach(s => {
+      if (s.warmup) return;
+      const p = plan[ai++];
+      if (!p || s.done === true) return;
+      s.kg = p.kg;
+      if (p.reps) s.reps = p.reps;
+    });
+    while (ai < plan.length) {
+      const p = plan[ai++];
+      sets.push({ kg: p.kg, reps: p.reps, rpe: null, warmup: false, done: false, doneAt: null, restSec: null });
+    }
+    return sets;
+  }
   let erster = true;
   sets.forEach(s => {
     if (s.done === true || s.warmup) return;
@@ -2654,6 +2895,7 @@ function renderUebungDetail() {
     '<input class="input-mini" inputmode="numeric" placeholder="auto" value="' + (os.restSec || '') + '" data-exset="restSec" data-id="' + esc(ex.id) + '"><span class="li-sub">s</span></div>' +
     '<div class="form-row"><label>Notiz (z. B. Sitzeinstellung, Griffbreite)</label>' +
     '<textarea class="input" data-exset="notiz" data-id="' + esc(ex.id) + '">' + esc(os.notiz || '') + '</textarea></div>';
+  h += periodEinstellungHtml(ex);
   /* Historie */
   h += '<div class="section-title">Historie</div>';
   if (!sess.length) h += '<div class="empty"><p>Noch keine Einheiten mit dieser Übung.</p></div>';
@@ -3850,6 +4092,7 @@ const ACTIONS = {
     render();
   },
   'tpl-warmup': el => {
+    wuAnzahl = null;
     const i = +el.dataset.i;
     const it = tplDraft.exercises[i];
     const ex = exById(it.exId);
@@ -3861,14 +4104,25 @@ const ACTIONS = {
       '<div class="sheet-sub">für <b>' + esc(ex.name) + '</b> — nur diese Übung. Gib dein heutiges Arbeitsgewicht ein.</div>' +
       '<div class="form-row"><label>Arbeitsgewicht (kg)</label>' +
       '<input class="input" id="wu-kg" inputmode="decimal" placeholder="z. B. 100" value="' + vorschlag + '" data-ex="' + esc(it.exId) + '"></div>' +
-      '<div id="wu-preview">' + warmupPreviewHtml(it.exId, parseNum(vorschlag)) + '</div>' +
+      '<div id="wu-wahl">' + warmupWahlHtml(it.exId, parseNum(vorschlag), wuAnzahl) + '</div>' +
+      '<div id="wu-preview">' + warmupPreviewHtml(it.exId, parseNum(vorschlag), wuAnzahl) + '</div>' +
       '<div class="sheet-actions"><button class="btn btn-primary" data-action="wu-apply" data-i="' + i + '">Als Aufwärmsätze übernehmen</button></div>');
+  },
+  'wu-anzahl': el => {
+    wuAnzahl = +el.dataset.n;
+    const feld = document.getElementById('wu-kg');
+    if (!feld) return;
+    const kg = parseNum(feld.value);
+    const wahl = document.getElementById('wu-wahl');
+    const prev = document.getElementById('wu-preview');
+    if (wahl) wahl.innerHTML = warmupWahlHtml(feld.dataset.ex, kg, wuAnzahl);
+    if (prev) prev.innerHTML = warmupPreviewHtml(feld.dataset.ex, kg, wuAnzahl);
   },
   'wu-apply': el => {
     const it = tplDraft.exercises[+el.dataset.i];
     const target = parseNum($('#wu-kg').value);
     if (!(target > 0)) { showToast('Bitte ein Arbeitsgewicht eingeben'); return; }
-    const warm = computeWarmup(target, exById(it.exId)).map(s => ({ warmup: true, kg: s.kg, reps: s.reps }));
+    const warm = computeWarmup(target, exById(it.exId), wuAnzahl).map(s => ({ warmup: true, kg: s.kg, reps: s.reps }));
     if (!warm.length) { showToast('Kein Aufwärmen nötig — Gewicht zu leicht'); return; }
     it.sets = warm.concat(it.sets.filter(s => !s.warmup)); // vorhandene Aufwärmsätze ersetzen
     closeSheet();
@@ -4092,19 +4346,30 @@ const ACTIONS = {
     if (inp) inp.value = feld === 'kg' ? fmtInput(v) : v;
     saveSoon();
   },
+  /* Der Vorschlag wird hier neu gerechnet statt aus data-Attributen gelesen:
+     Ein Satzplan ist eine Liste, kein Attributwert — und die Quelle bleibt so
+     dieselbe wie beim Anzeigen. */
   'prog-apply': el => {
-    const kg = parseNum(el.dataset.kg);
-    if (kg == null) return;
-    const reps = el.dataset.reps ? parseInt(el.dataset.reps, 10) : null;
-    vorschlagAufSaetze(S.activeWorkout.exercises[+el.dataset.ex].sets, kg, reps);
+    const xi = +el.dataset.ex;
+    const wex = S.activeWorkout.exercises[xi];
+    if (!wex) return;
+    const prog = progressionFor(wex.exId, wex.repMin, wex.repMax, wex);
+    if (prog.kg == null && !(prog.plan && prog.plan.length)) return;
+    const vorher = wex.sets.filter(x => !x.warmup).length;
+    vorschlagAufSaetze(wex.sets, prog.kg, prog.reps, prog.plan);
     save();
+    closeSheet();   // greift nur, wenn der Weg über „Warum?" ging
     render();
-    showToast('Vorschlag übernommen');
+    const nachher = wex.sets.filter(x => !x.warmup).length;
+    showToast(prog.plan
+      ? (nachher > vorher ? nachher + ' Sätze übernommen (+' + (nachher - vorher) + ')' : prog.plan.length + ' Sätze übernommen')
+      : 'Vorschlag übernommen');
   },
   'prog-warum': el => {
-    const wex = S.activeWorkout.exercises[+el.dataset.ex];
+    const xi = +el.dataset.ex;
+    const wex = S.activeWorkout.exercises[xi];
     const ex = exById(wex.exId);
-    const prog = progressionFor(wex.exId, wex.repMin, wex.repMax);
+    const prog = progressionFor(wex.exId, wex.repMin, wex.repMax, wex);
     const k = Coach.info(ex);
     /* „So setzt du das um" steht bewusst vor der Begründung: im Training will man
        zuerst wissen, was zu tun ist — die Herleitung kann darunter warten. */
@@ -4126,10 +4391,41 @@ const ACTIONS = {
         '<div class="mini-note">' + esc(a.grund) + '</div>' +
         '<div class="mini-note">Sehnen-Belastungszeit diese Woche: <b>' + esc(tut.text) + '</b> — ' + esc(tut.grund) + '</div></div>';
     }
+    /* Der Satzplan als Tabelle — das ist die Antwort auf „was mache ich jetzt".
+       Sie steht ganz oben, noch vor der Umsetzung und lange vor der Herleitung. */
+    const satzTabelle = (prog.plan && prog.plan.length)
+      ? '<div class="section-title">Deine Sätze heute</div><div class="card" style="padding:10px 14px">' +
+        prog.plan.map((pp, i) =>
+          '<div class="hist-set"><span class="hs-n">' + (i + 1) + '</span>' +
+          '<span class="hs-main">' + fmtKg(pp.kg) + ' kg × ' + pp.reps + ' Wdh.</span></div>').join('') +
+        '<div class="hist-set hist-set-sum"><span class="hs-n">Σ</span><span class="hs-main">' +
+        prog.plan.reduce((a, pp) => a + pp.reps, 0) + ' Wiederholungen · ' +
+        fmtKg(Math.round(prog.plan.reduce((a, pp) => a + (pp.kg || 0) * pp.reps, 0))) + ' kg Volumen</span></div></div>' +
+        (prog.satzPlus ? '<div class="mini-note">Ein Satz mehr als zuletzt — siehe „Sätze" unten.</div>' : '')
+      : '';
+    /* Läuft ein Periodisierungsblock, gehört der Blockplan über alles andere:
+       Er ist der Grund, warum die Zahlen so aussehen, wie sie aussehen. */
+    let periodKopf = '';
+    if (prog.periode) {
+      const pe = prog.periode;
+      periodKopf = '<div class="card" style="padding:10px 14px">' +
+        '<div class="li-title li-title-sm">Block ' + pe.block + ' · Woche ' + pe.woche + ' von ' + pe.wochen + ' — ' + esc(pe.name) + '</div>' +
+        pe.plan.map(w => '<div class="hist-set' + (w.woche === pe.woche ? ' hist-set-sum' : '') + '">' +
+          '<span class="hs-n">W' + w.woche + '</span>' +
+          '<span class="hs-main hs-main-flex">' + esc(w.name) + '</span>' +
+          '<span class="hs-sub">' + fmtKg(w.kg) + ' kg · ' + w.saetze + '×' + w.reps + ' · RPE ' +
+          (w.rpeVon === w.rpeBis ? fmtKg(w.rpeVon) : fmtKg(w.rpeVon) + '–' + fmtKg(w.rpeBis)) +
+          ' · ' + fmtMinSek(w.pause) + '</span></div>').join('') +
+        (pe.gehalten ? '<div class="mini-note">Diese Woche wird nicht gesteigert — die Vorwoche stand nicht vollständig.</div>' : '') +
+        '</div>';
+    }
     openSheet('<div class="sheet-title">Coach-Empfehlung</div>' +
       '<div class="sheet-sub"><b>' + esc(ex.name) + '</b> · ' + esc(k.label) + '</div>' +
       rehaKopf +
-      '<div class="info-box"><b>' + esc(prog.text) + '</b></div>' +
+      periodKopf +
+      '<div class="info-box"><b>' + esc(prog.text) + '</b>' +
+      (prog.planText ? '<br>' + esc(prog.planText) : '') + '</div>' +
+      satzTabelle +
       schritte +
       (prog.grund ? '<div class="section-title">Warum</div><div class="info-box">' + esc(prog.grund) + '</div>' : '') +
       '<div class="info-box">Satzpause: <b>' + fmtMinSek(restTarget(wex.exId, wex.restSec)) + ' min</b><br>' +
@@ -4138,7 +4434,10 @@ const ACTIONS = {
         : (S.settings.coach !== false ? esc(Coach.pauseInfo(ex).grund) : 'Pauschalwert aus den Einstellungen (Klassik-Modus).')) + '</div>' +
       '<div class="mini-note">' + esc(Coach.QUELLEN) + '</div>' +
       (prog.reha ? '<div class="mini-note">' + esc(Coach.REHA_QUELLEN) + '</div>' : '') +
-      '<div class="sheet-actions"><button class="btn btn-primary" data-action="sheet-close">Alles klar</button></div>');
+      (prog.periode ? '<div class="mini-note">' + esc(Coach.PERIOD_QUELLEN) + '</div>' : '') +
+      '<div class="sheet-actions">' +
+      '<button class="btn btn-primary" data-action="prog-apply" data-ex="' + xi + '">Sätze übernehmen</button>' +
+      '<button class="btn" data-action="sheet-close">Alles klar</button></div>');
   },
   'set-add': el => {
     const wex = S.activeWorkout.exercises[+el.dataset.ex];
@@ -4196,6 +4495,8 @@ const ACTIONS = {
       '<button class="btn btn-primary" data-action="wo-ex-replace" data-ex="' + xi + '">Übung ersetzen…</button>' +
       '<button class="btn" data-action="wo-ex-notiz" data-ex="' + xi + '">Notiz</button>' +
       '<button class="btn" data-action="wo-warmup" data-ex="' + xi + '">Aufwärmen berechnen</button>' +
+      '<button class="btn" data-action="wo-ex-pause" data-ex="' + xi + '">Pausenziel: ' +
+        fmtMinSek(restTarget(wex.exId, wex.restSec)) + ' min…</button>' +
       (aw.exercises.length > 1 ? '<button class="btn" data-action="wo-ex-order">Reihenfolge ändern…</button>' : '') +
       '<button class="btn btn-danger" data-action="wo-ex-remove" data-ex="' + xi + '">Übung entfernen</button>' +
       '</div>');
@@ -4275,6 +4576,7 @@ const ACTIONS = {
     render();
   },
   'wo-warmup': el => {
+    wuAnzahl = null;
     const aw = S.activeWorkout;
     if (!aw) return;
     const xi = +el.dataset.ex;
@@ -4289,7 +4591,8 @@ const ACTIONS = {
       '<div class="sheet-sub">für <b>' + esc(ex.name) + '</b> — die Aufwärmsätze werden vor deine Arbeitssätze eingefügt.</div>' +
       '<div class="form-row"><label>Arbeitsgewicht (kg)</label>' +
       '<input class="input" id="wu-kg" inputmode="decimal" placeholder="z. B. 100" value="' + vorschlag + '" data-ex="' + esc(wex.exId) + '"></div>' +
-      '<div id="wu-preview">' + warmupPreviewHtml(wex.exId, parseNum(vorschlag)) + '</div>' +
+      '<div id="wu-wahl">' + warmupWahlHtml(wex.exId, parseNum(vorschlag), wuAnzahl) + '</div>' +
+      '<div id="wu-preview">' + warmupPreviewHtml(wex.exId, parseNum(vorschlag), wuAnzahl) + '</div>' +
       '<div class="sheet-actions"><button class="btn btn-primary" data-action="wo-wu-apply" data-ex="' + xi + '">Einfügen</button></div>');
   },
   'wo-wu-apply': el => {
@@ -4299,7 +4602,7 @@ const ACTIONS = {
     const wex = aw.exercises[xi];
     const target = parseNum($('#wu-kg').value);
     if (!(target > 0)) { showToast('Bitte ein Arbeitsgewicht eingeben'); return; }
-    const warm = computeWarmup(target, exById(wex.exId));
+    const warm = computeWarmup(target, exById(wex.exId), wuAnzahl);
     if (!warm.length) { showToast('Kein Aufwärmen nötig — Gewicht zu leicht'); return; }
     /* Pausen-Zeiger über Objekt-Identität retten, dann nicht abgehakte Warmups ersetzen */
     const restSet = (aw.rest && aw.rest.exIdx === xi) ? wex.sets[aw.rest.setIdx] : null;
@@ -4315,6 +4618,118 @@ const ACTIONS = {
     closeSheet();
     render();
     showToast(neu.length + ' Aufwärmsätze eingefügt');
+  },
+  /* Pausenziel je Übung — mitten im Training erreichbar, nicht nur über den
+     Umweg Übungen-Tab. Zwei Reichweiten, weil beides vorkommt: „heute ist die
+     Bank belegt" ist etwas anderes als „diese Übung braucht immer mehr". */
+  'wo-ex-pause': el => {
+    const aw = S.activeWorkout;
+    if (!aw) return;
+    const xi = +el.dataset.ex;
+    const wex = aw.exercises[xi];
+    if (!wex) return;
+    const ex = exById(wex.exId);
+    const jetzt = restTarget(wex.exId, wex.restSec);
+    const eigen = (S.exerciseSettings[wex.exId] || {}).restSec;
+    const pw = periodWoche(wex.exId);
+    openSheet('<div class="sheet-title">Pausenziel</div>' +
+      '<div class="sheet-sub">für <b>' + esc(ex.name) + '</b> · aktuell ' + fmtMinSek(jetzt) + ' min</div>' +
+      radHtml() +
+      '<div class="mini-note">Automatisch wären es ' + fmtMinSek(pauseStandard(wex.exId)) + ' min — ' +
+      (pw ? 'in dieser Periodisierungswoche ' + fmtMinSek(pw.pause) + ' min. ' : '') +
+      (S.settings.coach !== false ? esc(Coach.pauseInfo(ex).grund) : 'Pauschalwert aus den Einstellungen.') + '</div>' +
+      '<div class="sheet-actions">' +
+      '<button class="btn btn-primary" data-action="wo-ex-pause-set" data-ex="' + xi + '" data-dauer="immer">' +
+      'Immer für diese Übung <span class="rad-wert" id="rad-wert">' + fmtMinSek(jetzt) + '</span></button>' +
+      '<button class="btn" data-action="wo-ex-pause-set" data-ex="' + xi + '" data-dauer="heute">Nur dieses Training</button>' +
+      (eigen ? '<button class="btn btn-danger" data-action="wo-ex-pause-set" data-ex="' + xi + '" data-dauer="auto">Auf automatisch zurücksetzen</button>' : '') +
+      '<button class="btn" data-action="sheet-close">Abbrechen</button></div>');
+    radPositionSetzen(Math.floor(jetzt / 60), Math.round((jetzt % 60) / RAD_SEK_SCHRITT));
+  },
+  'wo-ex-pause-set': el => {
+    const aw = S.activeWorkout;
+    if (!aw) return;
+    const wex = aw.exercises[+el.dataset.ex];
+    if (!wex) return;
+    const art = el.dataset.dauer;
+    if (art === 'auto') {
+      const o = S.exerciseSettings[wex.exId];
+      if (o) delete o.restSec;
+      wex.restSec = null;
+      showToast('Wieder automatisch');
+    } else {
+      const sec = radDauerLesen();
+      if (!(sec >= RAD_SEK_SCHRITT)) { showToast('Bitte eine Dauer wählen'); return; }
+      if (art === 'immer') {
+        const o = S.exerciseSettings[wex.exId] || (S.exerciseSettings[wex.exId] = {});
+        o.restSec = sec;
+        wex.restSec = null;   // sonst überdeckt eine alte Tagesvorgabe die neue Dauervorgabe
+        showToast('Pausenziel ' + fmtMinSek(sec) + ' min gemerkt');
+      } else {
+        wex.restSec = sec;
+        showToast('Heute ' + fmtMinSek(sec) + ' min');
+      }
+    }
+    save();
+    closeSheet();
+    render();
+  },
+  /* Tippen auf den laufenden Countdown: Ziel der LAUFENDEN Pause ändern —
+     und auf Wunsch gleich als Vorgabe der Übung behalten. */
+  'rest-ziel': () => {
+    const aw = S.activeWorkout;
+    if (!aw || !aw.rest) return;
+    const wex = aw.exercises[aw.rest.exIdx];
+    const name = wex ? exById(wex.exId).name : null;
+    const jetzt = aw.rest.targetSec;
+    openSheet('<div class="sheet-title">Pausenziel ändern</div>' +
+      '<div class="sheet-sub">' + (name ? 'Laufende Pause nach <b>' + esc(name) + '</b>' : 'Laufende freie Pause') +
+      ' · Ziel ' + fmtMinSek(jetzt) + ' min</div>' +
+      radHtml() +
+      '<div class="sheet-actions">' +
+      '<button class="btn btn-primary" data-action="rest-ziel-set" data-dauer="jetzt">' +
+      'Nur diese Pause <span class="rad-wert" id="rad-wert">' + fmtMinSek(jetzt) + '</span></button>' +
+      (wex ? '<button class="btn" data-action="rest-ziel-set" data-dauer="immer">Immer für diese Übung</button>' : '') +
+      '<button class="btn" data-action="sheet-close">Abbrechen</button></div>');
+    radPositionSetzen(Math.floor(jetzt / 60), Math.round((jetzt % 60) / RAD_SEK_SCHRITT));
+  },
+  'rest-ziel-set': el => {
+    const aw = S.activeWorkout;
+    if (!aw || !aw.rest) { closeSheet(); return; }
+    const sec = radDauerLesen();
+    if (!(sec >= RAD_SEK_SCHRITT)) { showToast('Bitte eine Dauer wählen'); return; }
+    aw.rest.targetSec = sec;
+    /* Neues Ziel noch nicht erreicht? Dann darf der Gong wieder kommen. */
+    if ((Date.now() - aw.rest.startedAt) / 1000 < sec) aw.rest.signaled = false;
+    pushPlanen((aw.rest.startedAt + sec * 1000 - Date.now()) / 1000);
+    if (el.dataset.dauer === 'immer') {
+      const wex = aw.exercises[aw.rest.exIdx];
+      if (wex) {
+        const o = S.exerciseSettings[wex.exId] || (S.exerciseSettings[wex.exId] = {});
+        o.restSec = sec;
+        wex.restSec = null;
+        showToast('Pausenziel ' + fmtMinSek(sec) + ' min gemerkt');
+      }
+    } else {
+      showToast('Ziel ' + fmtMinSek(sec) + ' min');
+    }
+    save();
+    closeSheet();
+    render();
+  },
+  /* Blockneustart: Die laufende Woche wird Woche 1 eines neuen Blocks, und das
+     Startgewicht rückt auf die Last der laufenden Woche. So steigt man nach einer
+     Krankheits- oder Urlaubspause dort wieder ein, wo man wirklich steht. */
+  'period-neustart': el => {
+    const id = el.dataset.id;
+    const pw = periodWoche(id);
+    const per = (S.exerciseSettings[id] || {}).periode;
+    if (!pw || !per) return;
+    per.basis = pw.kg;
+    per.seit = wochenStart(Date.now());
+    save();
+    render();
+    showToast('Block neu gestartet bei ' + fmtKg(pw.kg) + ' kg');
   },
   'rest-done': () => endRest(true),
   'rest-skip': () => endRest(false),
@@ -4854,8 +5269,11 @@ document.addEventListener('input', e => {
   }
   /* Aufwärm-Rechner: Live-Vorschau aktualisieren */
   if (el.id === 'wu-kg') {
+    const kg = parseNum(el.value);
+    const wahl = document.getElementById('wu-wahl');
     const prev = document.getElementById('wu-preview');
-    if (prev) prev.innerHTML = warmupPreviewHtml(el.dataset.ex, parseNum(el.value));
+    if (wahl) wahl.innerHTML = warmupWahlHtml(el.dataset.ex, kg, wuAnzahl);
+    if (prev) prev.innerHTML = warmupPreviewHtml(el.dataset.ex, kg, wuAnzahl);
     return;
   }
   /* Übungen-Suche & Picker-Suche (nur Liste neu rendern, Fokus behalten) */
@@ -4896,6 +5314,11 @@ document.addEventListener('input', e => {
     saveSoon();
     return;
   }
+  /* Periodisierung je Übung */
+  if (el.dataset.exper) {
+    periodFeldSetzen(el);
+    return;
+  }
   /* Übungs-Einstellungen */
   if (el.dataset.exset) {
     const id = el.dataset.id;
@@ -4931,6 +5354,7 @@ document.addEventListener('change', e => {
     if (s.done === true) { save(); render(); }
     return;
   }
+  if (el.dataset.exper) { periodFeldSetzen(el); return; }
   /* RPE im aktiven Workout */
   if (el.dataset.wsel === 'rpe') {
     const aw = S.activeWorkout;
