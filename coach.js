@@ -103,7 +103,9 @@ window.KraftlogCoach = (function () {
 
   /* repMin/repMax sind NUR Rückfallwerte, wenn der Plan keine Satzziele vorgibt.
      incPct = Richtwert für den Laststeigerungsschritt (ACSM 2009: 2–10 %),
-     raster = kleinster real einstellbarer Gewichtsschritt der Übungsklasse. */
+     raster = Rückfallwert für den Gewichtsschritt, wenn die Übung kein bekanntes
+     Gerät hat. Maßgeblich ist sonst RASTER_EQ (siehe unten): das Raster hängt am
+     Gerät, nicht an der Muskelgruppe. */
   const KATEGORIEN = {
     'uk-verbund': {
       label: 'Unterkörper-Grundübung',
@@ -126,7 +128,7 @@ window.KraftlogCoach = (function () {
     'iso-klein': {
       label: 'Isolationsübung (kleine Muskelgruppe)',
       repMin: 8, repMax: 12,
-      incPct: 0.02, incMin: 1.25, incMax: 2.5, raster: 1.25,
+      incPct: 0.02, incMin: 2.5, incMax: 2.5, raster: 2.5,
       incGrund: 'Kleine Muskeln (z. B. Bizeps, Seitschulter): kleinstmöglicher Schritt und primär über Wiederholungen steigern.'
     }
   };
@@ -147,6 +149,40 @@ window.KraftlogCoach = (function () {
   };
 
   function info(ex) { return KATEGORIEN[kategorie(ex)]; }
+  /* Kleinster real einstellbarer Gewichtsschritt. Der hängt am GERÄT, nicht an
+     der Muskelgruppe: Ein Seitheben springt mit Kurzhanteln genauso in
+     2,5-kg-Stufen wie ein Bankdrücken, weil das Hantelsortiment nun einmal so
+     abgestuft ist. Ein 1,25-kg-Schritt, den man am Gerät gar nicht einstellen
+     kann, ist keine Empfehlung, sondern ein Rechenartefakt.
+     Wer in einem Studio mit feinerer Abstufung trainiert (Mikroscheiben,
+     2-kg-Hanteln, 1,25er-Zusatzgewichte am Stack), ändert die Werte HIER —
+     alles andere im Coach zieht automatisch nach. */
+  const RASTER_STD = 2.5;
+  const RASTER_EQ = {
+    'Langhantel':    2.5,   // 2 × 1,25-kg-Scheiben auf der Stange
+    'SZ-Stange':     2.5,
+    'Multipresse':   2.5,
+    'Kurzhantel':    2.5,   // festes Sortiment, 2,5-kg-Stufen
+    'Maschine':      2.5,   // Steckgewicht, ggf. mit Zusatzscheibe
+    'Kabelzug':      2.5,
+    'Körpergewicht': 2.5    // Zusatzgewicht am Gürtel/in der Weste
+  };
+  function rasterFuer(ex) {
+    const r = ex && RASTER_EQ[ex.eq];
+    if (r > 0) return r;
+    const k = info(ex);
+    return (k && k.raster) || RASTER_STD;
+  }
+
+  /* Wie weit die Wiederholungen über das Zielband hinauslaufen dürfen, wenn der
+     kleinste mögliche Gewichtssprung größer als 10 % der Last ist (typisch für
+     leichte Kurzhanteln: 12,5 → 15 kg sind 20 %). Bis hierhin ist Steigerung
+     über Wiederholungen gleichwertig (Plotkin et al. 2022; 5–30 Wdh. liefern
+     vergleichbare Hypertrophie, Schoenfeld et al. 2021). Danach wird der grobe
+     Sprung trotzdem genommen — sonst stünde die Last bei genau den Übungen für
+     immer still, bei denen das Studio nun einmal keine feinere Abstufung hat. */
+  const WDH_UEBER_ZIEL = 3;
+
   /* Unbekannte Muskelgruppe (eigene Übung mit fremdem mg): auf die Untergrenze fallen. */
   function pauseInfo(ex) {
     const p = PAUSEN[ex && ex.mg];
@@ -225,7 +261,7 @@ window.KraftlogCoach = (function () {
   function schritt(ex, kg) {
     const k = info(ex);
     if (!(kg > 0)) return null;
-    const raster = k.raster || 2.5;
+    const raster = rasterFuer(ex);
     const roh = kg * k.incPct;
     let s = Math.round(roh / raster) * raster;
     if (s < raster) s = raster;
@@ -247,7 +283,7 @@ window.KraftlogCoach = (function () {
   function inkrement(ex, topKg) {
     const s = schritt(ex, topKg);
     if (s != null) return s;
-    return (info(ex).raster || 2.5);
+    return rasterFuer(ex);
   }
 
   /* ======================================================================
@@ -341,14 +377,14 @@ window.KraftlogCoach = (function () {
        Wiederholungen sind also keine 5-%-Angelegenheit. Gedeckelt bei 15 %,
        damit ein einzelner schlechter Tag nicht den halben Fortschritt kostet. */
     function reduziert(fehlende) {
-      const raster = k.raster || 2.5;
+      const raster = rasterFuer(ex);
       const pct = clamp(0.03 * Math.max(1, fehlende), 0.05, 0.15);
       const ziellast = Math.floor((topKg * (1 - pct)) / raster) * raster;
       return Math.max(raster, Math.min(ziellast, topKg - raster));
     }
 
     /* ---------- Fall A: Last trägt nicht mehr → deutliche Reduktion ---------- */
-    if (dU <= b.weg && topKg > (k.raster || 2.5)) {
+    if (dU <= b.weg && topKg > rasterFuer(ex)) {
       const ziellast = reduziert(Math.abs(dU));
       const minusPct = Math.round((1 - ziellast / topKg) * 100);
       return {
@@ -375,7 +411,7 @@ window.KraftlogCoach = (function () {
        Verfehlen um eine einzige Wiederholung ist kein Fortschritt. */
     if (dU < 0) {
       const davorVerfehlt = !!(topDavor && (topDavor.kg || 0) >= topKg && (topDavor.reps || 0) < boden);
-      if (davorVerfehlt && topKg > (k.raster || 2.5)) {
+      if (davorVerfehlt && topKg > rasterFuer(ex)) {
         const ziellast = reduziert(Math.abs(dU));
         const minusPct = Math.round((1 - ziellast / topKg) * 100);
         return {
@@ -482,9 +518,38 @@ window.KraftlogCoach = (function () {
       const s = schritt(ex, topKg);
       if (s == null) {
         /* Kein tragfähiger Gewichtssprung verfügbar → über Wiederholungen steigern. */
-        const raster = k.raster || 2.5;
+        const raster = rasterFuer(ex);
         const noetig = repsFuerSprung(topKg, raster, repMin);
-        const naechstes = Math.min(topReps + 1, noetig);
+        const deckel = ziel + WDH_UEBER_ZIEL;
+
+        /* Wiederholungen sind ausgereizt: Der grobe Sprung ist jetzt das
+           kleinere Übel. Das neue Wiederholungsziel fällt dabei unter das
+           Zielband — das ist die ehrliche Folge daraus, dass die nächste Hantel
+           eben 20 % schwerer ist, und kein Rückschritt. */
+        if (topReps >= deckel) {
+          const neuKg2 = topKg + raster;
+          const e2 = e1rm(topKg, Math.min(topReps, 15));
+          const erwartet2 = e2 ? Math.floor(30 * (e2 / neuKg2 - 1)) : boden;
+          const neuReps2 = clamp(erwartet2, 3, ziel);
+          const pct2 = Math.round(raster / topKg * 100);
+          return {
+            typ: 'plus', kg: neuKg2, reps: neuReps2,
+            text: '+' + fmtKgLokal(raster) + ' kg → ' + fmtKgLokal(neuKg2) + ' kg × ' + neuReps2 + ' Wdh.',
+            grund: 'Der Sprung ist mit ' + pct2 + ' % groß, aber du bist mit ' + topReps +
+                   ' Wdh. bereits ' + (topReps - ziel) + ' über dem Zielband ' + boden + '–' + ziel +
+                   ' — und feiner als ' + fmtKgLokal(raster) + ' kg lässt sich das Gewicht hier nicht einstellen. ' +
+                   'Noch mehr Wiederholungen bringen für die Kraft nichts mehr; ab hier ist der grobe Sprung der Fortschritt.',
+            hinweis: [
+              ['Gewicht', '+' + fmtKgLokal(raster) + ' kg → ' + fmtKgLokal(neuKg2) + ' kg — die nächste verfügbare Stufe.'],
+              ['Wiederholungen', neuReps2 + ' im Top-Satz, also unter dem Zielband. Das ist eingeplant: ' + pct2 +
+                                 ' % mehr Last kosten Wiederholungen.'],
+              ['Anstrengung', '1–3 Wdh. in Reserve (RPE 7–9). Der erste Satz an der neuen Hantel darf sich fremd anfühlen.'],
+              ['Danach', 'Wieder auf ' + ziel + ' Wdh. hocharbeiten. Bis dahin bleibt die Last stehen.']
+            ].concat(abfallHinweis ? [abfallHinweis] : [])
+          };
+        }
+
+        const naechstes = Math.min(topReps + 1, noetig, deckel);
         return {
           typ: 'wdh', kg: topKg, reps: naechstes,
           text: fmtKgLokal(topKg) + ' kg × ' + naechstes + ' Wdh. anpeilen',
@@ -496,7 +561,11 @@ window.KraftlogCoach = (function () {
             ['Gewicht', fmtKgLokal(topKg) + ' kg — unverändert.'],
             ['Wiederholungen', naechstes + ' im Top-Satz (zuletzt ' + topReps + ').'],
             ['Anstrengung', '1–2 Wdh. in Reserve (RPE 8–9).'],
-            ['Sprung kommt bei', 'ca. ' + noetig + ' Wdh. — dann trägt ' + fmtKgLokal(topKg + raster) + ' kg × ' + repMin + ' Wdh. dieselbe Leistung.']
+            ['Sprung kommt bei', noetig <= deckel
+              ? 'ca. ' + noetig + ' Wdh. — dann trägt ' + fmtKgLokal(topKg + raster) + ' kg × ' + repMin + ' Wdh. dieselbe Leistung.'
+              : 'spätestens ' + deckel + ' Wdh. Rechnerisch trüge ' + fmtKgLokal(topKg + raster) + ' kg × ' + repMin +
+                ' Wdh. erst ab ca. ' + noetig + ' Wdh. dieselbe Leistung — so weit wird hier nicht gewartet, ' +
+                'sonst stünde die Last für immer.']
           ].concat(abfallHinweis ? [abfallHinweis] : [])
         };
       }
@@ -813,7 +882,7 @@ window.KraftlogCoach = (function () {
 
   function periodSchritt(ex, kg) {
     const s = schritt(ex, kg);
-    return s != null ? s : (info(ex).raster || 2.5);
+    return s != null ? s : rasterFuer(ex);
   }
 
   /* Wo steht der Block gerade? Rein aus dem Startdatum gerechnet — kein
@@ -841,7 +910,7 @@ window.KraftlogCoach = (function () {
     cfg = cfg || {};
     const basisRoh = +cfg.basis;
     if (!(basisRoh > 0)) return null;
-    const raster = info(ex).raster || 2.5;
+    const raster = rasterFuer(ex);
     let basis = basisRoh;
     for (let b = 1; b < (block || 1); b++) basis += periodSchritt(ex, basis);
     const s = periodSchritt(ex, basis);
@@ -1230,7 +1299,7 @@ window.KraftlogCoach = (function () {
 
     /* ---- Rote Ampel: zurück, aber nicht ins Nichts ---- */
     if (ampel.farbe === 'rot') {
-      const raster = k.raster || 2.5;
+      const raster = rasterFuer(ex);
       const ziellast = topKg > raster
         ? Math.max(raster, Math.floor((topKg * 0.8) / raster) * raster)
         : topKg;
@@ -1287,7 +1356,7 @@ window.KraftlogCoach = (function () {
 
     /* Grüne Ampel: Steigerung erlaubt — aber mit gedeckeltem Schritt. */
     if (basis.typ === 'plus') {
-      const raster = k.raster || 2.5;
+      const raster = rasterFuer(ex);
       /* Abrunden, nicht kaufmännisch runden: 5 % sind hier eine Obergrenze,
          keine Zielgröße. Aufrunden würde den Deckel regelmäßig reißen
          (80 kg × 5 % = 4 kg → aufgerundet 5 kg = 6,3 %). */
